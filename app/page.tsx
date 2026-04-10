@@ -222,7 +222,7 @@ export default function Home() {
             NYC Building Snitch
           </p>
           <h1 className="mt-5 font-serif text-5xl font-light tracking-wide text-[#1A1A1A] md:text-6xl">
-            Building Red-Flag Checker
+          The Landlord Red-Flag Index
           </h1>
           <p className="mt-4 max-w-3xl text-sm leading-7 text-stone-600">
             Search by exact house number and street name to review complaint
