@@ -339,6 +339,17 @@ export default function Home() {
           </section>
         ) : null}
       </main>
+      <footer className="border-t border-stone-200 bg-[#FDFCFB]">
+        <div className="mx-auto max-w-5xl px-8 py-6 md:px-12">
+          <p className="text-xs leading-relaxed text-stone-500">
+            Data for this tool is sourced from NYC Open Data and is provided for informational
+            purposes only. While reasonable efforts are made to reflect the underlying dataset,
+            no guarantee is made as to completeness, accuracy, or timeliness, and the creators
+            of this application accept no liability for decisions made or actions taken based on
+            this information.
+          </p>
+        </div>
+      </footer>
     </div>
   );
 }
