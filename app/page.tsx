@@ -219,7 +219,7 @@ export default function Home() {
       <main className="mx-auto flex w-full max-w-5xl flex-col gap-10 px-8 py-14 md:px-12">
         <section className="border border-stone-300 bg-white p-10">
           <p className="text-xs font-medium uppercase tracking-[0.32em] text-[#3D362F]">
-            NYC Student Housing Safety
+            NYC Building Snitch
           </p>
           <h1 className="mt-5 font-serif text-5xl font-light tracking-wide text-[#1A1A1A] md:text-6xl">
             Building Red-Flag Checker
