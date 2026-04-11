@@ -82,6 +82,7 @@ function isNewComplaint(value?: string): boolean {
 export default function Home() {
   const [houseNumber, setHouseNumber] = useState("");
   const [streetName, setStreetName] = useState("");
+  const [zipCode, setZipCode] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
   const [complaintCount, setComplaintCount] = useState<number | null>(null);
@@ -121,22 +122,29 @@ export default function Home() {
 
     const trimmedHouseNumber = houseNumber.trim().replace(/\s+/g, " ");
     const trimmedStreetName = streetName.trim().toUpperCase();
+    const zipDigits = zipCode.replace(/\D/g, "").slice(0, 5);
 
     if (!trimmedHouseNumber || !trimmedStreetName) {
       setError("Enter both a house number and street name.");
       return;
     }
+    if (zipDigits.length !== 5) {
+      setError("Enter a valid 5-digit ZIP code.");
+      return;
+    }
+    const trimmedZip = zipDigits;
 
     const escapedHouseNumber = trimmedHouseNumber.replace(/'/g, "''");
     const escapedStreetName = trimmedStreetName.replace(/'/g, "''");
-    const whereClause = `house_number='${escapedHouseNumber}' AND house_street='${escapedStreetName}'`;
+    const escapedZip = trimmedZip.replace(/'/g, "''");
+    const whereClause = `house_number='${escapedHouseNumber}' AND house_street='${escapedStreetName}' AND zip_code='${escapedZip}'`;
 
     const countParams = new URLSearchParams({
       $select: "count(*) as complaint_count",
       $where: whereClause,
     });
 
-    const hpdWhere = `housenumber='${escapedHouseNumber}' AND upper(streetname)='${escapedStreetName}'`;
+    const hpdWhere = `housenumber='${escapedHouseNumber}' AND upper(streetname)='${escapedStreetName}' AND zip='${escapedZip}'`;
     const hpdParams = new URLSearchParams({
       $select: "housenumber,streetname,class,novdescription,currentstatus,inspectiondate",
       $where: hpdWhere,
@@ -144,7 +152,7 @@ export default function Home() {
       $limit: "15",
     });
 
-    const rodentWhereAddress = `house_number='${escapedHouseNumber}' AND upper(street_name)='${escapedStreetName}'`;
+    const rodentWhereAddress = `house_number='${escapedHouseNumber}' AND upper(street_name)='${escapedStreetName}' AND zip_code='${escapedZip}'`;
     const rodentCutoff = new Date();
     rodentCutoff.setFullYear(rodentCutoff.getFullYear() - 5);
     const rodentCutoffDate = rodentCutoff.toISOString().slice(0, 10);
@@ -159,8 +167,12 @@ export default function Home() {
     const heatCutoff = new Date();
     heatCutoff.setFullYear(heatCutoff.getFullYear() - 1);
     const heatCutoffIso = `${heatCutoff.toISOString().slice(0, 10)}T00:00:00.000`;
-    const heatAddressMatch = `upper(street_name)='${escapedStreetName}' AND upper(incident_address) LIKE upper('${escapedHouseNumber} %')`;
-    const heatWhere = `${heatAddressMatch} AND complaint_type='HEAT/HOT WATER' AND created_date >= '${heatCutoffIso}'`;
+    const streetFirstWord =
+      trimmedStreetName.split(/\s+/).find((token) => token.length > 0) ?? trimmedStreetName;
+    const escapedStreetFirstWord = streetFirstWord.replace(/'/g, "''");
+    const heatHousePrefixPattern = `${escapedHouseNumber}%`;
+    const heatAddressMatch = `incident_address LIKE '${heatHousePrefixPattern}' AND incident_address LIKE '%${escapedStreetFirstWord}%'`;
+    const heatWhere = `${heatAddressMatch} AND incident_zip='${escapedZip}' AND complaint_type='HEAT/HOT WATER' AND created_date >= '${heatCutoffIso}'`;
     const heatCountParams = new URLSearchParams({
       $select: "count(*) as heat_count",
       $where: heatWhere,
@@ -270,13 +282,12 @@ export default function Home() {
           The Landlord Red-Flag Index
           </h1>
           <p className="mt-4 max-w-3xl text-sm leading-7 text-stone-600">
-            Search by exact house number and street name to review complaint
-            activity from NYC Open Data and quickly understand the building
-            safety signal.
+            Search by house number, street name, and ZIP code to review complaint activity from
+            NYC Open Data and narrow results to the building you mean.
           </p>
 
           <form
-            className="mt-10 grid border border-stone-300 bg-white p-4 md:grid-cols-[1fr_2fr_auto]"
+            className="mt-10 grid border border-stone-300 bg-white p-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)_auto]"
             onSubmit={checkBuilding}
           >
             <input
@@ -284,14 +295,23 @@ export default function Home() {
               value={houseNumber}
               onChange={(event) => setHouseNumber(event.target.value)}
               placeholder="House number (e.g. 123)"
-              className="h-12 border-r border-stone-200 bg-white px-4 text-sm text-[#1A1A1A] placeholder:text-stone-400 outline-none"
+              className="h-12 border-b border-stone-200 bg-white px-4 text-sm text-[#1A1A1A] placeholder:text-stone-400 outline-none md:border-b-0 md:border-r"
             />
             <input
               type="text"
               value={streetName}
               onChange={(event) => setStreetName(event.target.value)}
               placeholder="Street name (e.g. BROADWAY)"
-              className="h-12 border-r border-stone-200 bg-white px-4 text-sm text-[#1A1A1A] placeholder:text-stone-400 outline-none"
+              className="h-12 border-b border-stone-200 bg-white px-4 text-sm text-[#1A1A1A] placeholder:text-stone-400 outline-none md:border-b-0 md:border-r"
+            />
+            <input
+              type="text"
+              inputMode="numeric"
+              maxLength={10}
+              value={zipCode}
+              onChange={(event) => setZipCode(event.target.value)}
+              placeholder="ZIP (e.g. 10029)"
+              className="h-12 border-b border-stone-200 bg-white px-4 text-sm text-[#1A1A1A] placeholder:text-stone-400 outline-none md:border-b-0 md:border-r"
             />
             <button
               type="submit"
@@ -308,7 +328,10 @@ export default function Home() {
         {complaintCount !== null && safetyLevel ? (
           <section className={`border p-10 ${safetyStyles}`}>
             <h2 className="font-serif text-3xl font-light tracking-wide">
-              {houseNumber.trim()} {streetName.trim().toUpperCase()}
+              {houseNumber.trim()} {streetName.trim().toUpperCase()}{" "}
+              <span className="text-stone-600">
+                {zipCode.replace(/\D/g, "").slice(0, 5)}
+              </span>
             </h2>
             <p className="mt-6 text-lg">
               Complaints found: <span className="font-bold">{complaintCount}</span>
