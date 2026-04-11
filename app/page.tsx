@@ -25,6 +25,8 @@ type RodentInspectionRow = {
 const APP_TOKEN = "x3IpcsPIypsdi03KGFDG8awmW";
 const RODENT_INSPECTION_RESOURCE =
   "https://data.cityofnewyork.us/resource/p937-wjvj.json";
+const THREE_ONE_ONE_RESOURCE =
+  "https://data.cityofnewyork.us/resource/erm2-nwe9.json";
 const DOB_COMPLAINT_CATEGORY_LABELS: Record<string, string> = {
   "8A": "Illegal Residential Occupancy (Loft)",
   "4A": "Illegal Hotel Rooms / Airbnb in Residential Building",
@@ -134,6 +136,9 @@ export default function Home() {
   const [activeRatSignInspections, setActiveRatSignInspections] = useState<
     RodentInspectionRow[]
   >([]);
+  const [heatHotWater311Last12Months, setHeatHotWater311Last12Months] = useState<
+    number | null
+  >(null);
   const [error, setError] = useState("");
 
   const safetyLevel = useMemo(() => {
@@ -158,6 +163,7 @@ export default function Home() {
     setComplaintCount(null);
     setRecentComplaints([]);
     setActiveRatSignInspections([]);
+    setHeatHotWater311Last12Months(null);
     setShowArchive(false);
 
     const trimmedHouseNumber = houseNumber.trim().replace(/\s+/g, " ");
@@ -197,6 +203,15 @@ export default function Home() {
       $limit: "15",
     });
 
+    const heatCutoff = new Date();
+    heatCutoff.setFullYear(heatCutoff.getFullYear() - 1);
+    const heatCutoffIso = `${heatCutoff.toISOString().slice(0, 10)}T00:00:00.000`;
+    const heatAddressMatch = `upper(street_name)='${escapedStreetName}' AND upper(incident_address) LIKE upper('${escapedHouseNumber} %')`;
+    const heatParams = new URLSearchParams({
+      $select: "count(*) as heat_count",
+      $where: `${heatAddressMatch} AND complaint_type='HEAT/HOT WATER' AND created_date >= '${heatCutoffIso}'`,
+    });
+
     setIsLoading(true);
 
     try {
@@ -213,23 +228,35 @@ export default function Home() {
         return Array.isArray(raw) ? raw : [];
       });
 
-      const [countResponse, activityResponse, rodentRows] = await Promise.all([
-        fetch(
-          `https://data.cityofnewyork.us/resource/vztk-gaf7.json?${countParams.toString()}`,
-          {
-            headers,
-            cache: "no-store",
-          },
-        ),
-        fetch(
-          `https://data.cityofnewyork.us/resource/vztk-gaf7.json?${activityParams.toString()}`,
-          {
-            headers,
-            cache: "no-store",
-          },
-        ),
-        rodentFetch.catch(() => [] as RodentInspectionRow[]),
-      ]);
+      const heat311Fetch = fetch(
+        `${THREE_ONE_ONE_RESOURCE}?${heatParams.toString()}`,
+        { headers, cache: "no-store" },
+      ).then(async (response) => {
+        if (!response.ok) return null;
+        const raw = (await response.json()) as Array<{ heat_count?: string }>;
+        const n = Number(raw?.[0]?.heat_count ?? 0);
+        return Number.isFinite(n) && n >= 0 ? n : null;
+      });
+
+      const [countResponse, activityResponse, rodentRows, heatCount] =
+        await Promise.all([
+          fetch(
+            `https://data.cityofnewyork.us/resource/vztk-gaf7.json?${countParams.toString()}`,
+            {
+              headers,
+              cache: "no-store",
+            },
+          ),
+          fetch(
+            `https://data.cityofnewyork.us/resource/vztk-gaf7.json?${activityParams.toString()}`,
+            {
+              headers,
+              cache: "no-store",
+            },
+          ),
+          rodentFetch.catch(() => [] as RodentInspectionRow[]),
+          heat311Fetch.catch(() => null),
+        ]);
 
       if (!countResponse.ok || !activityResponse.ok) {
         throw new Error("NYC Open Data request failed.");
@@ -246,9 +273,11 @@ export default function Home() {
       setComplaintCount(count);
       setRecentComplaints(Array.isArray(activityData) ? activityData : []);
       setActiveRatSignInspections(rodentRows);
+      setHeatHotWater311Last12Months(heatCount ?? 0);
     } catch {
       setError("Could not fetch complaints right now. Please try again.");
       setActiveRatSignInspections([]);
+      setHeatHotWater311Last12Months(null);
     } finally {
       setIsLoading(false);
     }
@@ -375,6 +404,23 @@ export default function Home() {
                   </p>
                 )}
               </div>
+            </div>
+
+            <div className="mt-8 border-t border-stone-200 pt-6">
+              <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.28em] text-[#3D362F]">
+                <span className="text-base normal-case tracking-normal" aria-hidden>
+                  🔥
+                </span>
+                Winter Essentials
+              </h3>
+              <p className="mt-2 text-xs text-stone-600">
+                311 service requests for heat or hot water at this address (last 12 months).
+              </p>
+              <p className="mt-4 font-serif text-2xl font-light text-[#1A1A1A]">
+                <span className="font-semibold">{heatHotWater311Last12Months ?? 0}</span>{" "}
+                HEAT/HOT WATER complaint
+                {(heatHotWater311Last12Months ?? 0) === 1 ? "" : "s"}
+              </p>
             </div>
 
             <div className="mt-8 border-t border-stone-200 pt-6">
