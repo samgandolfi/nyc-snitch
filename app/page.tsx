@@ -6,6 +6,7 @@ type SafetyLevel = "Green" | "Yellow" | "Red";
 
 /** DOB complaint count only; violation details come from HPD (wvxf-dwi5). */
 type HpdViolationRow = {
+  violationid?: string;
   housenumber?: string;
   streetname?: string;
   class?: string;
@@ -168,12 +169,15 @@ export default function Home() {
       $where: whereClause,
     });
 
-    const hpdWhere = `housenumber='${escapedHouseNumber}' AND upper(streetname)='${escapedStreetName}' AND zip='${escapedZip}'`;
+    /** House + ZIP only: HPD often uses a different street label than DOB for the same lot
+     *  (e.g. corner buildings: Beekman vs Catherine). No status filter — open and closed both appear. */
+    const hpdWhere = `housenumber='${escapedHouseNumber}' AND zip='${escapedZip}'`;
     const hpdParams = new URLSearchParams({
-      $select: "housenumber,streetname,class,novdescription,currentstatus,inspectiondate",
+      $select:
+        "violationid,housenumber,streetname,class,novdescription,currentstatus,inspectiondate",
       $where: hpdWhere,
       $order: "inspectiondate DESC",
-      $limit: "15",
+      $limit: "25",
     });
 
     const rodentWhereAddress = `house_number='${escapedHouseNumber}' AND upper(street_name)='${escapedStreetName}' AND zip_code='${escapedZip}'`;
@@ -375,8 +379,9 @@ export default function Home() {
                 HPD Violations
               </h3>
               <p className="mt-2 text-xs text-stone-600">
-                Housing Maintenance Code violations for this address (most recent first). The
-                count above reflects DOB complaints filed for the same address.
+                Housing Maintenance Code violations matched by house number and ZIP (includes open
+                and closed records). HPD may show a different street name than DOB for the same
+                building. The count above is DOB complaints for the street name you entered.
               </p>
               <button
                 type="button"
@@ -397,7 +402,7 @@ export default function Home() {
 
                       return (
                         <li
-                          key={`${row.inspectiondate ?? "unknown"}-${index}`}
+                          key={row.violationid ?? `${row.inspectiondate ?? "unknown"}-${index}`}
                           className="border-b border-stone-200 py-4 text-sm text-[#1A1A1A]"
                         >
                           <p className="flex flex-wrap items-center gap-2 font-serif text-lg font-light text-[#1A1A1A]">
@@ -412,6 +417,10 @@ export default function Home() {
                             {row.novdescription?.trim() || "No NOV description on file."}
                           </p>
                           <p className="mt-2 text-xs tracking-wide text-stone-600">
+                            HPD address:{" "}
+                            {[row.housenumber, row.streetname].filter(Boolean).join(" ") || "—"}
+                          </p>
+                          <p className="mt-1 text-xs tracking-wide text-stone-600">
                             Status: {row.currentstatus || "Not specified"}
                           </p>
                           <p className="mt-1 text-xs tracking-wide text-stone-600">
