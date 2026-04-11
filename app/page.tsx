@@ -12,7 +12,19 @@ type ComplaintActivity = {
   disposition_code?: string;
 };
 
+/** NYC Open Data stores DOHMH “Active Rat Signs” as result value `Rat Activity`. */
+type RodentInspectionRow = {
+  house_number?: string;
+  street_name?: string;
+  inspection_date?: string;
+  result?: string;
+  inspection_type?: string;
+  borough?: string;
+};
+
 const APP_TOKEN = "x3IpcsPIypsdi03KGFDG8awmW";
+const RODENT_INSPECTION_RESOURCE =
+  "https://data.cityofnewyork.us/resource/p937-wjvj.json";
 const DOB_COMPLAINT_CATEGORY_LABELS: Record<string, string> = {
   "8A": "Illegal Residential Occupancy (Loft)",
   "4A": "Illegal Hotel Rooms / Airbnb in Residential Building",
@@ -119,6 +131,9 @@ export default function Home() {
   const [showArchive, setShowArchive] = useState(false);
   const [complaintCount, setComplaintCount] = useState<number | null>(null);
   const [recentComplaints, setRecentComplaints] = useState<ComplaintActivity[]>([]);
+  const [activeRatSignInspections, setActiveRatSignInspections] = useState<
+    RodentInspectionRow[]
+  >([]);
   const [error, setError] = useState("");
 
   const safetyLevel = useMemo(() => {
@@ -142,6 +157,7 @@ export default function Home() {
     setError("");
     setComplaintCount(null);
     setRecentComplaints([]);
+    setActiveRatSignInspections([]);
     setShowArchive(false);
 
     const trimmedHouseNumber = houseNumber.trim().replace(/\s+/g, " ");
@@ -169,6 +185,18 @@ export default function Home() {
       $limit: "10",
     });
 
+    const rodentWhereAddress = `house_number='${escapedHouseNumber}' AND upper(street_name)='${escapedStreetName}'`;
+    const rodentCutoff = new Date();
+    rodentCutoff.setFullYear(rodentCutoff.getFullYear() - 5);
+    const rodentCutoffDate = rodentCutoff.toISOString().slice(0, 10);
+    const rodentParams = new URLSearchParams({
+      $select:
+        "house_number,street_name,inspection_date,result,inspection_type,borough",
+      $where: `${rodentWhereAddress} AND result='Rat Activity' AND inspection_date >= '${rodentCutoffDate}'`,
+      $order: "inspection_date DESC",
+      $limit: "15",
+    });
+
     setIsLoading(true);
 
     try {
@@ -176,7 +204,16 @@ export default function Home() {
         "X-App-Token": APP_TOKEN,
       };
 
-      const [countResponse, activityResponse] = await Promise.all([
+      const rodentFetch = fetch(
+        `${RODENT_INSPECTION_RESOURCE}?${rodentParams.toString()}`,
+        { headers, cache: "no-store" },
+      ).then(async (response) => {
+        if (!response.ok) return [] as RodentInspectionRow[];
+        const raw = (await response.json()) as RodentInspectionRow[];
+        return Array.isArray(raw) ? raw : [];
+      });
+
+      const [countResponse, activityResponse, rodentRows] = await Promise.all([
         fetch(
           `https://data.cityofnewyork.us/resource/vztk-gaf7.json?${countParams.toString()}`,
           {
@@ -191,6 +228,7 @@ export default function Home() {
             cache: "no-store",
           },
         ),
+        rodentFetch.catch(() => [] as RodentInspectionRow[]),
       ]);
 
       if (!countResponse.ok || !activityResponse.ok) {
@@ -207,8 +245,10 @@ export default function Home() {
 
       setComplaintCount(count);
       setRecentComplaints(Array.isArray(activityData) ? activityData : []);
+      setActiveRatSignInspections(rodentRows);
     } catch {
       setError("Could not fetch complaints right now. Please try again.");
+      setActiveRatSignInspections([]);
     } finally {
       setIsLoading(false);
     }
@@ -332,6 +372,48 @@ export default function Home() {
                 ) : (
                   <p className="border-b border-stone-200 py-4 text-sm text-stone-600">
                     No specific details found.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-8 border-t border-stone-200 pt-6">
+              <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.28em] text-[#3D362F]">
+                <span className="text-base normal-case tracking-normal" aria-hidden>
+                  🐀
+                </span>
+                Rodent Activity
+              </h3>
+              <p className="mt-2 text-xs text-stone-600">
+                Recent DOHMH inspections at this address where active rat signs were recorded
+                (last five years).
+              </p>
+              <div className="mt-4 max-h-96 overflow-y-auto">
+                {activeRatSignInspections.length > 0 ? (
+                  <ul>
+                    {activeRatSignInspections.map((row, index) => (
+                      <li
+                        key={`${row.inspection_date ?? "unknown"}-${index}`}
+                        className="border-b border-stone-200 py-4 text-sm text-[#1A1A1A]"
+                      >
+                        <p className="font-serif text-lg font-light text-[#1A1A1A]">
+                          Active Rat Signs
+                        </p>
+                        <p className="mt-1 text-xs tracking-wide text-stone-600">
+                          Inspection date: {formatEnteredDate(row.inspection_date)}
+                        </p>
+                        <p className="mt-1 text-xs tracking-wide text-stone-600">
+                          Inspection type: {row.inspection_type || "Not specified"}
+                        </p>
+                        <p className="mt-1 text-xs tracking-wide text-stone-600">
+                          Borough: {row.borough || "Not specified"}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="border-b border-stone-200 py-4 text-sm text-stone-600">
+                    No recent active rat signs found for this address.
                   </p>
                 )}
               </div>
