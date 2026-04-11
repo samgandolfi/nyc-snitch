@@ -126,6 +126,40 @@ function getHeatComplaintSeverity(count: number): {
   return null;
 }
 
+function getViolationEmoji(nov?: string, klass?: string): string {
+  const u = (nov ?? "").toUpperCase();
+  if (/\bBED\s*BUG|BEDBUG|CIMEX\b/.test(u)) return "🪳";
+  if (/\bROACH|PEST\b/.test(u)) return "🪳";
+  if (/\bMOLD|MOULD|DAMP|DAMPNESS\b/.test(u)) return "🦠";
+  if (/\bLEAD|LBP\b/.test(u)) return "🎨";
+  if (/\bHEAT|HOT\s*WATER|BOILER|HVAC|RADIATOR\b/.test(u)) return "🔥";
+  if (/\bPLUMB|PIPE|LEAK\b/.test(u)) return "🛠️";
+  if (/\bELEV|ELEVATOR\b/.test(u)) return "🛗";
+  if (/\bWINDOW|FRAME\b/.test(u)) return "🪟";
+  if (/\bDOOR|HINGE|SELF-?CLOSING\b/.test(u)) return "🚪";
+  if (/\bELECT|WIRING\b/.test(u)) return "⚡";
+  if (/\bGARBAGE|TRASH|REFUSE\b/.test(u)) return "🗑️";
+  if (/\bPAINT|PEEL\b/.test(u)) return "🖌️";
+  const c = (klass ?? "").trim().toUpperCase();
+  if (c === "A") return "🔴";
+  if (c === "B") return "🟠";
+  if (c === "C") return "🟡";
+  return "⚖️";
+}
+
+function get311Emoji(complaintType?: string, descriptor?: string): string {
+  const t = `${complaintType ?? ""} ${descriptor ?? ""}`.toUpperCase();
+  if (t.includes("HEAT") || t.includes("HOT WATER")) return "🔥";
+  if (t.includes("BED")) return "🪳";
+  if (t.includes("PLUMB") || t.includes("LEAK") || t.includes("WATER")) return "🛠️";
+  if (t.includes("MOLD") || t.includes("UNSANITARY")) return "🦠";
+  if (t.includes("PAINT") || t.includes("PEEL")) return "🖌️";
+  if (t.includes("ELEV")) return "🛗";
+  if (t.includes("NOISE")) return "🔊";
+  if (t.includes("DOOR") || t.includes("WINDOW")) return "🪟";
+  return "📣";
+}
+
 export default function Home() {
   const [houseNumber, setHouseNumber] = useState("");
   const [streetName, setStreetName] = useState("");
@@ -437,266 +471,313 @@ export default function Home() {
         </section>
 
         {complaintCount !== null && safetyLevel ? (
-          <section className={`border p-10 ${safetyStyles}`}>
-            <h2 className="font-serif text-3xl font-light tracking-wide">
+          <section className={`border border-stone-300 bg-white p-8 md:p-10 ${safetyStyles}`}>
+            <h2 className="font-serif text-3xl font-light tracking-wide md:text-4xl">
               {houseNumber.trim()} {streetName.trim().toUpperCase()}{" "}
-              <span className="text-stone-600">
+              <span className="text-stone-500">
                 {zipCode.replace(/\D/g, "").slice(0, 5)}
               </span>
             </h2>
-            <p className="mt-6 text-lg">
-              Complaints found: <span className="font-bold">{complaintCount}</span>
-            </p>
-            <p className="mt-3 text-lg">
-              Safety signal:{" "}
-              <span className="inline-flex items-center border border-[#C9A66B] bg-[#E8D8B8]/45 px-3 py-1 text-sm font-semibold tracking-wide text-[#3D362F]">
-                {safetyLevel} - {getSafetyLabel(safetyLevel)}
-              </span>
-            </p>
-            <p className="mt-4 text-sm text-stone-600">
-              Thresholds: Green (0-2), Yellow (3-5), Red (6+).
-            </p>
 
-            <div className="mt-8 border-t border-stone-200 pt-6">
-              <h3 className="text-xs font-semibold uppercase tracking-[0.28em] text-[#3D362F]">
-                Housing: violations & tenant complaints
-              </h3>
-              <p className="mt-2 text-xs text-stone-600">
-                Official violations are the legal record. Tenant complaints are 311 requests routed
-                to HPD at this address (last five years). The DOB complaint count at the top uses
-                the street name you typed; HPD may list a different street for the same lot.
-              </p>
-
-              <div className="mt-6">
-                <h4 className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#3D362F]">
-                  Violations (legal record)
-                </h4>
-                <p className="mt-2 font-serif text-xl font-light text-[#1A1A1A]">
-                  <span className="font-semibold">{hpdViolations.length}</span>{" "}
-                  {hpdViolations.length === 1 ? "violation" : "violations"}{" "}
-                  <span className="text-sm font-normal text-stone-600">
-                    (open & closed · matched by house number &amp; ZIP)
-                  </span>
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setShowArchive((current) => !current)}
-                  className="mt-3 border border-stone-300 bg-white px-3 py-1.5 text-xs font-medium uppercase tracking-[0.16em] text-[#3D362F] transition hover:bg-stone-50"
-                >
-                  {showArchive ? "Hide Archive" : "See Archive"}
-                </button>
-                <div className="mt-4 max-h-96 overflow-y-auto">
-                  {visibleHpdViolations.length > 0 ? (
-                    <ul>
-                      {visibleHpdViolations.map((row, index) => {
-                        const isNew = isNewComplaint(row.inspectiondate);
-                        const title =
-                          row.class != null && String(row.class).trim() !== ""
-                            ? `Class ${String(row.class).trim()} violation`
-                            : "HPD violation";
-
-                        return (
-                          <li
-                            key={row.violationid ?? `${row.inspectiondate ?? "unknown"}-${index}`}
-                            className="border-b border-stone-200 py-4 text-sm text-[#1A1A1A]"
-                          >
-                            <p className="flex flex-wrap items-center gap-2 font-serif text-lg font-light text-[#1A1A1A]">
-                              <span>{title}</span>
-                              {isNew ? (
-                                <span className="border border-[#C9A66B] bg-[#E8D8B8]/45 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#3D362F]">
-                                  New
-                                </span>
-                              ) : null}
-                            </p>
-                            <p className="mt-1 text-[11px] leading-snug text-stone-500">
-                              {row.novdescription?.trim() || "No NOV description on file."}
-                            </p>
-                            <p className="mt-2 text-xs tracking-wide text-stone-600">
-                              HPD address:{" "}
-                              {[row.housenumber, row.streetname].filter(Boolean).join(" ") || "—"}
-                            </p>
-                            <p className="mt-1 text-xs tracking-wide text-stone-600">
-                              Status: {row.currentstatus || "Not specified"}
-                            </p>
-                            <p className="mt-1 text-xs tracking-wide text-stone-600">
-                              Inspection: {formatEnteredDate(row.inspectiondate)}
-                            </p>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  ) : (
-                    <p className="border-b border-stone-200 py-4 text-sm text-stone-600">
-                      No HPD violations found for this address.
-                    </p>
-                  )}
+            <div className="mt-8 flex flex-wrap items-end gap-x-10 gap-y-6">
+              <div className="flex items-end gap-3">
+                <span className="text-5xl leading-none" aria-hidden>
+                  📋
+                </span>
+                <div>
+                  <p className="font-serif text-5xl font-light leading-none tabular-nums text-[#1A1A1A]">
+                    {complaintCount}
+                  </p>
+                  <p className="mt-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
+                    DOB complaints
+                  </p>
                 </div>
               </div>
-
-              <div className="mt-8 border-t border-stone-200 pt-6">
-                <h4 className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#3D362F]">
-                  Tenant complaints (311 → HPD)
-                </h4>
-                <p className="mt-2 font-serif text-xl font-light text-[#1A1A1A]">
-                  <span className="font-semibold">{tenant311Count ?? 0}</span>{" "}
-                  {(tenant311Count ?? 0) === 1 ? "request" : "requests"}{" "}
-                  <span className="text-sm font-normal text-stone-600">
-                    (unique service request IDs · duplicates removed)
-                  </span>
-                </p>
-                {hpdViolations.length === 0 && (tenant311Count ?? 0) > 0 ? (
-                  <p className="mt-2 text-[11px] leading-relaxed text-stone-500">
-                    Issues reported by tenants; pending city inspection.
+              <div className="flex items-end gap-3">
+                <span className="text-5xl leading-none" aria-hidden>
+                  {safetyLevel === "Green" ? "🟢" : safetyLevel === "Yellow" ? "🟡" : "🔴"}
+                </span>
+                <div>
+                  <p className="font-serif text-3xl font-light leading-none text-[#1A1A1A]">
+                    {safetyLevel}
                   </p>
-                ) : null}
-                {tenant311Rows.length > 0 && (tenant311Count ?? 0) > tenant311Rows.length ? (
-                  <p className="mt-1 text-[11px] text-stone-500">
-                    Showing the {tenant311Rows.length} most recent; total count above includes older
-                    requests in this five-year window.
+                  <p className="mt-2 max-w-xs text-sm leading-snug text-stone-600">
+                    {getSafetyLabel(safetyLevel)}
                   </p>
-                ) : null}
-                <div className="mt-4 max-h-96 overflow-y-auto">
-                  {tenant311Rows.length > 0 ? (
-                    <ul>
-                      {tenant311Rows.map((row, index) => (
-                        <li
-                          key={row.unique_key ?? `${row.created_date ?? "u"}-${index}`}
-                          className="border-b border-stone-200 py-4 text-sm text-[#1A1A1A]"
-                        >
-                          <p className="font-serif text-lg font-light text-[#1A1A1A]">
-                            {row.complaint_type?.trim() || "311 request"}
-                          </p>
-                          <p className="mt-1 text-[11px] leading-snug text-stone-500">
-                            {row.descriptor?.trim() || "No descriptor provided."}
-                          </p>
-                          <p className="mt-2 text-xs tracking-wide text-stone-600">
-                            Filed: {formatEnteredDate(row.created_date)}
-                          </p>
-                          <p className="mt-1 text-xs tracking-wide text-stone-600">
-                            Status: {row.status || "Not specified"}
-                          </p>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (tenant311Count ?? 0) === 0 ? (
-                    <p className="border-b border-stone-200 py-4 text-sm text-stone-600">
-                      No HPD-routed 311 requests for this address in the last five years.
-                    </p>
-                  ) : (
-                    <p className="border-b border-stone-200 py-4 text-sm text-stone-600">
-                      Details for these requests could not be loaded.
-                    </p>
-                  )}
                 </div>
               </div>
             </div>
+            <p className="mt-4 text-[11px] text-stone-500">
+              Signal: Green 0–2 · Yellow 3–5 · Red 6+ (same address + ZIP as your search).
+            </p>
 
-            <div className="mt-8 border-t border-stone-200 pt-6">
-              <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.28em] text-[#3D362F]">
-                <span className="text-base normal-case tracking-normal" aria-hidden>
+            {/* Winter Essentials — prominent */}
+            <div className="mt-10 rounded-lg border border-amber-200/80 bg-gradient-to-br from-amber-50/90 to-white p-6 md:p-8">
+              <h3 className="flex flex-wrap items-center gap-3 text-xs font-semibold uppercase tracking-[0.28em] text-[#3D362F]">
+                <span className="text-4xl normal-case leading-none tracking-normal" aria-hidden>
                   🔥
                 </span>
-                Winter Essentials
+                <span>Winter Essentials</span>
               </h3>
-              <p className="mt-2 text-xs text-stone-600">
-                311 service requests for heat or hot water at this address (last 12 months).
+              <p className="mt-3 text-sm text-stone-600">
+                Heat &amp; hot water — 311 (last 12 months, same ZIP + address match).
               </p>
-              <div className="mt-4 flex flex-wrap items-center gap-3">
-                <p className="font-serif text-2xl font-light text-[#1A1A1A]">
-                  <span className="font-semibold">{heatHotWater311Last12Months ?? 0}</span>{" "}
-                  HEAT/HOT WATER complaint
-                  {(heatHotWater311Last12Months ?? 0) === 1 ? "" : "s"}
-                </p>
+              <div className="mt-6 flex flex-wrap items-end gap-4">
+                <div className="flex items-end gap-2">
+                  <span className="text-5xl leading-none">🔥</span>
+                  <p className="font-serif text-5xl font-light tabular-nums leading-none text-[#1A1A1A]">
+                    {heatHotWater311Last12Months ?? 0}
+                  </p>
+                </div>
                 {heatSeverityBadge ? (
                   <span
-                    className={`inline-flex shrink-0 border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${heatSeverityBadge.className}`}
+                    className={`inline-flex shrink-0 border px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] ${heatSeverityBadge.className}`}
                   >
                     {heatSeverityBadge.label}
                   </span>
                 ) : null}
               </div>
-              {heat311Rows.length === 25 &&
-              (heatHotWater311Last12Months ?? 0) > 25 ? (
-                <p className="mt-1 text-[11px] text-stone-500">
-                  List shows the 25 most recent; the total above is the full count for the last
-                  12 months.
+              <p className="mt-2 text-sm text-stone-600">
+                HEAT/HOT WATER complaint{(heatHotWater311Last12Months ?? 0) === 1 ? "" : "s"}
+              </p>
+              {heat311Rows.length === 25 && (heatHotWater311Last12Months ?? 0) > 25 ? (
+                <p className="mt-2 text-[11px] text-stone-500">
+                  List shows 25 most recent; headline is full 12‑month count.
                 </p>
               ) : null}
-              <div className="mt-4 max-h-72 overflow-y-auto">
+              <ul className="mt-5 space-y-3">
                 {heat311Rows.length > 0 ? (
-                  <ul>
-                    {heat311Rows.map((row, index) => (
-                      <li
-                        key={row.unique_key ?? `${row.created_date ?? "u"}-${index}`}
-                        className="border-b border-stone-200 py-4 text-sm text-[#1A1A1A]"
-                      >
-                        <p className="font-serif text-lg font-light text-[#1A1A1A]">
+                  heat311Rows.map((row, index) => (
+                    <li
+                      key={row.unique_key ?? `${row.created_date ?? "u"}-${index}`}
+                      className="flex gap-3 rounded-md border border-stone-200/80 bg-white/80 px-3 py-3"
+                    >
+                      <span className="text-2xl leading-none">🔥</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium text-[#1A1A1A]">
                           {row.complaint_type?.trim() || "HEAT/HOT WATER"}
                         </p>
-                        <p className="mt-1 text-[11px] leading-snug text-stone-500">
-                          {row.descriptor?.trim() || "No descriptor provided."}
+                        <p className="text-xs text-stone-500">
+                          Filed {formatEnteredDate(row.created_date)}
                         </p>
-                        <p className="mt-2 text-xs tracking-wide text-stone-600">
-                          Filed: {formatEnteredDate(row.created_date)}
-                        </p>
-                      </li>
-                    ))}
-                  </ul>
+                        {(row.descriptor?.trim() ?? "").length > 0 ? (
+                          <details className="mt-2">
+                            <summary className="cursor-pointer text-xs font-medium text-[#3D362F] underline decoration-stone-300 underline-offset-2 hover:decoration-[#C9A66B]">
+                              See details
+                            </summary>
+                            <p className="mt-2 text-[11px] leading-relaxed text-stone-600">
+                              {row.descriptor?.trim()}
+                            </p>
+                          </details>
+                        ) : null}
+                      </div>
+                    </li>
+                  ))
                 ) : (heatHotWater311Last12Months ?? 0) === 0 ? (
-                  <p className="border-b border-stone-200 py-4 text-sm text-stone-600">
-                    No heat or hot water 311 requests in the last 12 months.
-                  </p>
+                  <li className="text-sm text-stone-600">No heat / hot water 311 tickets this year.</li>
                 ) : (
-                  <p className="border-b border-stone-200 py-4 text-sm text-stone-600">
-                    Details for these requests could not be loaded.
-                  </p>
+                  <li className="text-sm text-stone-600">Couldn&apos;t load heat request details.</li>
                 )}
-              </div>
+              </ul>
             </div>
 
-            <div className="mt-8 border-t border-stone-200 pt-6">
-              <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.28em] text-[#3D362F]">
-                <span className="text-base normal-case tracking-normal" aria-hidden>
-                  🐀
-                </span>
-                Rodent Activity
+            {/* Housing: violations + tenants */}
+            <div className="mt-10 border-t border-stone-200 pt-8">
+              <h3 className="text-xs font-semibold uppercase tracking-[0.28em] text-[#3D362F]">
+                Housing snapshot
               </h3>
-              <p className="mt-2 text-xs text-stone-600">
-                Recent DOHMH inspections at this address where active rat signs were recorded
-                (last five years).
+              <p className="mt-2 text-sm text-stone-600">
+                Legal violations (HPD) vs tenant-filed 311 (routed to HPD). ZIP + house # match;
+                street labels can differ on corners.
               </p>
-              <div className="mt-4 max-h-96 overflow-y-auto">
-                {activeRatSignInspections.length > 0 ? (
-                  <ul>
-                    {activeRatSignInspections.map((row, index) => (
-                      <li
-                        key={`${row.inspection_date ?? "unknown"}-${index}`}
-                        className="border-b border-stone-200 py-4 text-sm text-[#1A1A1A]"
-                      >
-                        <p className="font-serif text-lg font-light text-[#1A1A1A]">
-                          Active Rat Signs
-                        </p>
-                        <p className="mt-1 text-[11px] leading-snug text-stone-500">
-                          {row.result?.trim() || "No inspection result text."}
-                        </p>
-                        <p className="mt-2 text-xs tracking-wide text-stone-600">
-                          Inspection date: {formatEnteredDate(row.inspection_date)}
-                        </p>
-                        <p className="mt-1 text-xs tracking-wide text-stone-600">
-                          Inspection type: {row.inspection_type || "Not specified"}
-                        </p>
-                        <p className="mt-1 text-xs tracking-wide text-stone-600">
-                          Borough: {row.borough || "Not specified"}
-                        </p>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="border-b border-stone-200 py-4 text-sm text-stone-600">
-                    No recent active rat signs found for this address.
+
+              <div className="mt-6 flex flex-wrap items-end gap-4 border-b border-stone-100 pb-6">
+                <span className="text-5xl leading-none">⚖️</span>
+                <div>
+                  <p className="font-serif text-5xl font-light tabular-nums leading-none">
+                    {hpdViolations.length}
                   </p>
-                )}
+                  <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
+                    HPD violations (legal record)
+                  </p>
+                </div>
               </div>
+              <button
+                type="button"
+                onClick={() => setShowArchive((current) => !current)}
+                className="mt-4 border border-stone-300 bg-white px-3 py-1.5 text-xs font-medium uppercase tracking-[0.16em] text-[#3D362F] transition hover:bg-stone-50"
+              >
+                {showArchive ? "Hide older violations" : "See 5-year archive"}
+              </button>
+              <ul className="mt-4 max-h-96 space-y-3 overflow-y-auto">
+                {visibleHpdViolations.length > 0 ? (
+                  visibleHpdViolations.map((row, index) => {
+                    const isNew = isNewComplaint(row.inspectiondate);
+                    const emoji = getViolationEmoji(row.novdescription, row.class);
+                    const klass =
+                      row.class != null && String(row.class).trim() !== ""
+                        ? `Class ${String(row.class).trim()}`
+                        : "Violation";
+                    const nov = row.novdescription?.trim() ?? "";
+
+                    return (
+                      <li
+                        key={row.violationid ?? `${row.inspectiondate ?? "unknown"}-${index}`}
+                        className="flex gap-3 rounded-md border border-stone-200 bg-white px-3 py-3"
+                      >
+                        <span className="text-3xl leading-none">{emoji}</span>
+                        <div className="min-w-0 flex-1">
+                          <p className="flex flex-wrap items-center gap-2 font-medium text-[#1A1A1A]">
+                            <span>{klass}</span>
+                            {isNew ? (
+                              <span className="border border-[#C9A66B] bg-[#E8D8B8]/45 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#3D362F]">
+                                New
+                              </span>
+                            ) : null}
+                          </p>
+                          <p className="text-xs text-stone-500">
+                            {formatEnteredDate(row.inspectiondate)} ·{" "}
+                            {[row.housenumber, row.streetname].filter(Boolean).join(" ") || "—"}
+                          </p>
+                          <details className="mt-2">
+                            <summary className="cursor-pointer text-xs font-medium text-[#3D362F] underline decoration-stone-300 underline-offset-2 hover:decoration-[#C9A66B]">
+                              See details
+                            </summary>
+                            <div className="mt-2 space-y-2">
+                              {row.currentstatus ? (
+                                <p className="text-[11px] font-medium text-stone-700">
+                                  Status: {row.currentstatus}
+                                </p>
+                              ) : null}
+                              {nov.length > 0 ? (
+                                <p className="max-h-48 overflow-y-auto text-[11px] leading-relaxed text-stone-600 whitespace-pre-wrap">
+                                  {nov}
+                                </p>
+                              ) : (
+                                <p className="text-[11px] text-stone-500">No NOV description on file.</p>
+                              )}
+                            </div>
+                          </details>
+                        </div>
+                      </li>
+                    );
+                  })
+                ) : (
+                  <li className="text-sm text-stone-600">No HPD violations for this house + ZIP.</li>
+                )}
+              </ul>
+
+              <div className="mt-10 flex flex-wrap items-end gap-4 border-b border-stone-100 pb-6">
+                <span className="text-5xl leading-none">📣</span>
+                <div>
+                  <p className="font-serif text-5xl font-light tabular-nums leading-none">
+                    {tenant311Count ?? 0}
+                  </p>
+                  <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
+                    Tenant 311 → HPD (5 yr, deduped)
+                  </p>
+                </div>
+              </div>
+              {hpdViolations.length === 0 && (tenant311Count ?? 0) > 0 ? (
+                <p className="mt-2 rounded-md border border-amber-200/60 bg-amber-50/50 px-3 py-2 text-sm text-stone-700">
+                  Issues reported by tenants; pending city inspection.
+                </p>
+              ) : null}
+              {tenant311Rows.length > 0 && (tenant311Count ?? 0) > tenant311Rows.length ? (
+                <p className="mt-2 text-[11px] text-stone-500">
+                  Showing {tenant311Rows.length} most recent; total above is full count in window.
+                </p>
+              ) : null}
+              <ul className="mt-4 max-h-96 space-y-3 overflow-y-auto">
+                {tenant311Rows.length > 0 ? (
+                  tenant311Rows.map((row, index) => {
+                    const em = get311Emoji(row.complaint_type, row.descriptor);
+                    const desc = row.descriptor?.trim() ?? "";
+                    return (
+                      <li
+                        key={row.unique_key ?? `${row.created_date ?? "u"}-${index}`}
+                        className="flex gap-3 rounded-md border border-stone-200 bg-white px-3 py-3"
+                      >
+                        <span className="text-3xl leading-none">{em}</span>
+                        <div className="min-w-0 flex-1">
+                          <p className="font-medium text-[#1A1A1A]">
+                            {row.complaint_type?.trim() || "311 request"}
+                          </p>
+                          <p className="text-xs text-stone-500">
+                            {formatEnteredDate(row.created_date)} · {row.status || "—"}
+                          </p>
+                          {desc.length > 0 ? (
+                            <details className="mt-2">
+                              <summary className="cursor-pointer text-xs font-medium text-[#3D362F] underline decoration-stone-300 underline-offset-2 hover:decoration-[#C9A66B]">
+                                See details
+                              </summary>
+                              <p className="mt-2 text-[11px] leading-relaxed text-stone-600">
+                                {desc}
+                              </p>
+                            </details>
+                          ) : null}
+                        </div>
+                      </li>
+                    );
+                  })
+                ) : (tenant311Count ?? 0) === 0 ? (
+                  <li className="text-sm text-stone-600">No HPD-routed 311 in the last five years.</li>
+                ) : (
+                  <li className="text-sm text-stone-600">Couldn&apos;t load 311 rows.</li>
+                )}
+              </ul>
+            </div>
+
+            {/* Rodent */}
+            <div className="mt-10 border-t border-stone-200 pt-8">
+              <div className="flex flex-wrap items-end gap-4">
+                <span className="text-5xl leading-none">🐀</span>
+                <div>
+                  <p className="font-serif text-5xl font-light tabular-nums leading-none">
+                    {activeRatSignInspections.length}
+                  </p>
+                  <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
+                    Rodent — active signs (5 yr)
+                  </p>
+                </div>
+              </div>
+              <p className="mt-3 text-sm text-stone-600">DOHMH inspections with rat activity.</p>
+              <ul className="mt-4 max-h-96 space-y-3 overflow-y-auto">
+                {activeRatSignInspections.length > 0 ? (
+                  activeRatSignInspections.map((row, index) => (
+                    <li
+                      key={`${row.inspection_date ?? "unknown"}-${index}`}
+                      className="flex gap-3 rounded-md border border-stone-200 bg-white px-3 py-3"
+                    >
+                      <span className="text-3xl leading-none">🐀</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium text-[#1A1A1A]">Active rat signs</p>
+                        <p className="text-xs text-stone-500">
+                          {formatEnteredDate(row.inspection_date)}
+                          {row.borough ? ` · ${row.borough}` : ""}
+                        </p>
+                        <details className="mt-2">
+                          <summary className="cursor-pointer text-xs font-medium text-[#3D362F] underline decoration-stone-300 underline-offset-2 hover:decoration-[#C9A66B]">
+                            See details
+                          </summary>
+                          <div className="mt-2 space-y-1 text-[11px] text-stone-600">
+                            <p>
+                              <span className="text-stone-500">Result: </span>
+                              {row.result?.trim() || "—"}
+                            </p>
+                            <p>
+                              <span className="text-stone-500">Type: </span>
+                              {row.inspection_type || "—"}
+                            </p>
+                          </div>
+                        </details>
+                      </div>
+                    </li>
+                  ))
+                ) : (
+                  <li className="text-sm text-stone-600">No active rat signs on record.</li>
+                )}
+              </ul>
             </div>
           </section>
         ) : null}
