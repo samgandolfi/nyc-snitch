@@ -22,6 +22,15 @@ type Heat311Row = {
   complaint_type?: string;
 };
 
+/** 311 SRs routed to HPD at this address (dedupe on `unique_key`). */
+type Tenant311Row = {
+  unique_key?: string;
+  created_date?: string;
+  complaint_type?: string;
+  descriptor?: string;
+  status?: string;
+};
+
 /** NYC Open Data stores DOHMH “Active Rat Signs” as result value `Rat Activity`. */
 type RodentInspectionRow = {
   house_number?: string;
@@ -80,6 +89,24 @@ function isNewComplaint(value?: string): boolean {
   return year === 2025 || year === 2026;
 }
 
+function dedupe311ByUniqueKey(rows: Tenant311Row[]): Tenant311Row[] {
+  const seen = new Map<string, Tenant311Row>();
+  for (const row of rows) {
+    const key = row.unique_key?.trim();
+    if (key) {
+      if (!seen.has(key)) seen.set(key, row);
+      continue;
+    }
+    const fallback = `${row.created_date ?? ""}|${row.descriptor ?? ""}|${row.complaint_type ?? ""}`;
+    if (!seen.has(fallback)) seen.set(fallback, row);
+  }
+  return Array.from(seen.values()).sort((a, b) => {
+    const tb = new Date(b.created_date ?? 0).getTime();
+    const ta = new Date(a.created_date ?? 0).getTime();
+    return tb - ta;
+  });
+}
+
 function getHeatComplaintSeverity(count: number): {
   label: string;
   className: string;
@@ -114,6 +141,8 @@ export default function Home() {
     number | null
   >(null);
   const [heat311Rows, setHeat311Rows] = useState<Heat311Row[]>([]);
+  const [tenant311Rows, setTenant311Rows] = useState<Tenant311Row[]>([]);
+  const [tenant311Count, setTenant311Count] = useState<number | null>(null);
   const [error, setError] = useState("");
 
   const safetyLevel = useMemo(() => {
@@ -143,6 +172,8 @@ export default function Home() {
     setActiveRatSignInspections([]);
     setHeatHotWater311Last12Months(null);
     setHeat311Rows([]);
+    setTenant311Rows([]);
+    setTenant311Count(null);
     setShowArchive(false);
 
     const trimmedHouseNumber = houseNumber.trim().replace(/\s+/g, " ");
@@ -212,6 +243,21 @@ export default function Home() {
       $limit: "25",
     });
 
+    const tenantCutoff = new Date();
+    tenantCutoff.setFullYear(tenantCutoff.getFullYear() - 5);
+    const tenantCutoffIso = `${tenantCutoff.toISOString().slice(0, 10)}T00:00:00.000`;
+    const tenantWhere = `${heatAddressMatch} AND incident_zip='${escapedZip}' AND agency='HPD' AND created_date >= '${tenantCutoffIso}'`;
+    const tenantCountParams = new URLSearchParams({
+      $select: "count(*) as tenant_count",
+      $where: tenantWhere,
+    });
+    const tenantListParams = new URLSearchParams({
+      $select: "unique_key,created_date,complaint_type,descriptor,status",
+      $where: tenantWhere,
+      $order: "created_date DESC",
+      $limit: "500",
+    });
+
     setIsLoading(true);
 
     try {
@@ -259,18 +305,51 @@ export default function Home() {
         return Array.isArray(raw) ? raw : [];
       });
 
-      const [countResponse, hpdRows, rodentRows, heat311Result] = await Promise.all([
-        fetch(
-          `https://data.cityofnewyork.us/resource/vztk-gaf7.json?${countParams.toString()}`,
-          {
-            headers,
-            cache: "no-store",
-          },
-        ),
-        hpdFetch.catch(() => [] as HpdViolationRow[]),
-        rodentFetch.catch(() => [] as RodentInspectionRow[]),
-        heat311Fetch.catch(() => ({ count: 0, rows: [] as Heat311Row[] })),
-      ]);
+      const tenant311Fetch = Promise.all([
+        fetch(`${THREE_ONE_ONE_RESOURCE}?${tenantCountParams.toString()}`, {
+          headers,
+          cache: "no-store",
+        }),
+        fetch(`${THREE_ONE_ONE_RESOURCE}?${tenantListParams.toString()}`, {
+          headers,
+          cache: "no-store",
+        }),
+      ]).then(async ([countResponse, listResponse]) => {
+        if (!countResponse.ok) return { count: 0, rows: [] as Tenant311Row[] };
+        const countRaw = (await countResponse.json()) as Array<{ tenant_count?: string }>;
+        const apiTotal = Number(countRaw?.[0]?.tenant_count ?? 0);
+        const n = Number.isFinite(apiTotal) && apiTotal >= 0 ? apiTotal : 0;
+        let rows: Tenant311Row[] = [];
+        let rawLen = 0;
+        if (listResponse.ok) {
+          const listRaw = (await listResponse.json()) as Tenant311Row[];
+          const raw = Array.isArray(listRaw) ? listRaw : [];
+          rawLen = raw.length;
+          rows = dedupe311ByUniqueKey(raw);
+        }
+        const tenantListLimit = 500;
+        const count = !listResponse.ok
+          ? n
+          : rawLen < tenantListLimit
+            ? rows.length
+            : n;
+        return { count, rows };
+      });
+
+      const [countResponse, hpdRows, rodentRows, heat311Result, tenant311Result] =
+        await Promise.all([
+          fetch(
+            `https://data.cityofnewyork.us/resource/vztk-gaf7.json?${countParams.toString()}`,
+            {
+              headers,
+              cache: "no-store",
+            },
+          ),
+          hpdFetch.catch(() => [] as HpdViolationRow[]),
+          rodentFetch.catch(() => [] as RodentInspectionRow[]),
+          heat311Fetch.catch(() => ({ count: 0, rows: [] as Heat311Row[] })),
+          tenant311Fetch.catch(() => ({ count: 0, rows: [] as Tenant311Row[] })),
+        ]);
 
       if (!countResponse.ok) {
         throw new Error("NYC Open Data request failed.");
@@ -288,11 +367,15 @@ export default function Home() {
       setActiveRatSignInspections(rodentRows);
       setHeatHotWater311Last12Months(heat311Result.count);
       setHeat311Rows(heat311Result.rows);
+      setTenant311Count(tenant311Result.count);
+      setTenant311Rows(tenant311Result.rows);
     } catch {
       setError("Could not fetch complaints right now. Please try again.");
       setActiveRatSignInspections([]);
       setHeatHotWater311Last12Months(null);
       setHeat311Rows([]);
+      setTenant311Rows([]);
+      setTenant311Count(null);
       setHpdViolations([]);
     } finally {
       setIsLoading(false);
@@ -376,65 +459,135 @@ export default function Home() {
 
             <div className="mt-8 border-t border-stone-200 pt-6">
               <h3 className="text-xs font-semibold uppercase tracking-[0.28em] text-[#3D362F]">
-                HPD Violations
+                Housing: violations & tenant complaints
               </h3>
               <p className="mt-2 text-xs text-stone-600">
-                Housing Maintenance Code violations matched by house number and ZIP (includes open
-                and closed records). HPD may show a different street name than DOB for the same
-                building. The count above is DOB complaints for the street name you entered.
+                Official violations are the legal record. Tenant complaints are 311 requests routed
+                to HPD at this address (last five years). The DOB complaint count at the top uses
+                the street name you typed; HPD may list a different street for the same lot.
               </p>
-              <button
-                type="button"
-                onClick={() => setShowArchive((current) => !current)}
-                className="mt-4 border border-stone-300 bg-white px-3 py-1.5 text-xs font-medium uppercase tracking-[0.16em] text-[#3D362F] transition hover:bg-stone-50"
-              >
-                {showArchive ? "Hide Archive" : "See Archive"}
-              </button>
-              <div className="mt-4 max-h-96 overflow-y-auto">
-                {visibleHpdViolations.length > 0 ? (
-                  <ul>
-                    {visibleHpdViolations.map((row, index) => {
-                      const isNew = isNewComplaint(row.inspectiondate);
-                      const title =
-                        row.class != null && String(row.class).trim() !== ""
-                          ? `Class ${String(row.class).trim()} violation`
-                          : "HPD violation";
 
-                      return (
+              <div className="mt-6">
+                <h4 className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#3D362F]">
+                  Violations (legal record)
+                </h4>
+                <p className="mt-2 font-serif text-xl font-light text-[#1A1A1A]">
+                  <span className="font-semibold">{hpdViolations.length}</span>{" "}
+                  {hpdViolations.length === 1 ? "violation" : "violations"}{" "}
+                  <span className="text-sm font-normal text-stone-600">
+                    (open & closed · matched by house number &amp; ZIP)
+                  </span>
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowArchive((current) => !current)}
+                  className="mt-3 border border-stone-300 bg-white px-3 py-1.5 text-xs font-medium uppercase tracking-[0.16em] text-[#3D362F] transition hover:bg-stone-50"
+                >
+                  {showArchive ? "Hide Archive" : "See Archive"}
+                </button>
+                <div className="mt-4 max-h-96 overflow-y-auto">
+                  {visibleHpdViolations.length > 0 ? (
+                    <ul>
+                      {visibleHpdViolations.map((row, index) => {
+                        const isNew = isNewComplaint(row.inspectiondate);
+                        const title =
+                          row.class != null && String(row.class).trim() !== ""
+                            ? `Class ${String(row.class).trim()} violation`
+                            : "HPD violation";
+
+                        return (
+                          <li
+                            key={row.violationid ?? `${row.inspectiondate ?? "unknown"}-${index}`}
+                            className="border-b border-stone-200 py-4 text-sm text-[#1A1A1A]"
+                          >
+                            <p className="flex flex-wrap items-center gap-2 font-serif text-lg font-light text-[#1A1A1A]">
+                              <span>{title}</span>
+                              {isNew ? (
+                                <span className="border border-[#C9A66B] bg-[#E8D8B8]/45 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#3D362F]">
+                                  New
+                                </span>
+                              ) : null}
+                            </p>
+                            <p className="mt-1 text-[11px] leading-snug text-stone-500">
+                              {row.novdescription?.trim() || "No NOV description on file."}
+                            </p>
+                            <p className="mt-2 text-xs tracking-wide text-stone-600">
+                              HPD address:{" "}
+                              {[row.housenumber, row.streetname].filter(Boolean).join(" ") || "—"}
+                            </p>
+                            <p className="mt-1 text-xs tracking-wide text-stone-600">
+                              Status: {row.currentstatus || "Not specified"}
+                            </p>
+                            <p className="mt-1 text-xs tracking-wide text-stone-600">
+                              Inspection: {formatEnteredDate(row.inspectiondate)}
+                            </p>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : (
+                    <p className="border-b border-stone-200 py-4 text-sm text-stone-600">
+                      No HPD violations found for this address.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-8 border-t border-stone-200 pt-6">
+                <h4 className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#3D362F]">
+                  Tenant complaints (311 → HPD)
+                </h4>
+                <p className="mt-2 font-serif text-xl font-light text-[#1A1A1A]">
+                  <span className="font-semibold">{tenant311Count ?? 0}</span>{" "}
+                  {(tenant311Count ?? 0) === 1 ? "request" : "requests"}{" "}
+                  <span className="text-sm font-normal text-stone-600">
+                    (unique service request IDs · duplicates removed)
+                  </span>
+                </p>
+                {hpdViolations.length === 0 && (tenant311Count ?? 0) > 0 ? (
+                  <p className="mt-2 text-[11px] leading-relaxed text-stone-500">
+                    Issues reported by tenants; pending city inspection.
+                  </p>
+                ) : null}
+                {tenant311Rows.length > 0 && (tenant311Count ?? 0) > tenant311Rows.length ? (
+                  <p className="mt-1 text-[11px] text-stone-500">
+                    Showing the {tenant311Rows.length} most recent; total count above includes older
+                    requests in this five-year window.
+                  </p>
+                ) : null}
+                <div className="mt-4 max-h-96 overflow-y-auto">
+                  {tenant311Rows.length > 0 ? (
+                    <ul>
+                      {tenant311Rows.map((row, index) => (
                         <li
-                          key={row.violationid ?? `${row.inspectiondate ?? "unknown"}-${index}`}
+                          key={row.unique_key ?? `${row.created_date ?? "u"}-${index}`}
                           className="border-b border-stone-200 py-4 text-sm text-[#1A1A1A]"
                         >
-                          <p className="flex flex-wrap items-center gap-2 font-serif text-lg font-light text-[#1A1A1A]">
-                            <span>{title}</span>
-                            {isNew ? (
-                              <span className="border border-[#C9A66B] bg-[#E8D8B8]/45 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#3D362F]">
-                                New
-                              </span>
-                            ) : null}
+                          <p className="font-serif text-lg font-light text-[#1A1A1A]">
+                            {row.complaint_type?.trim() || "311 request"}
                           </p>
                           <p className="mt-1 text-[11px] leading-snug text-stone-500">
-                            {row.novdescription?.trim() || "No NOV description on file."}
+                            {row.descriptor?.trim() || "No descriptor provided."}
                           </p>
                           <p className="mt-2 text-xs tracking-wide text-stone-600">
-                            HPD address:{" "}
-                            {[row.housenumber, row.streetname].filter(Boolean).join(" ") || "—"}
+                            Filed: {formatEnteredDate(row.created_date)}
                           </p>
                           <p className="mt-1 text-xs tracking-wide text-stone-600">
-                            Status: {row.currentstatus || "Not specified"}
-                          </p>
-                          <p className="mt-1 text-xs tracking-wide text-stone-600">
-                            Inspection: {formatEnteredDate(row.inspectiondate)}
+                            Status: {row.status || "Not specified"}
                           </p>
                         </li>
-                      );
-                    })}
-                  </ul>
-                ) : (
-                  <p className="border-b border-stone-200 py-4 text-sm text-stone-600">
-                    No HPD violations found for this address.
-                  </p>
-                )}
+                      ))}
+                    </ul>
+                  ) : (tenant311Count ?? 0) === 0 ? (
+                    <p className="border-b border-stone-200 py-4 text-sm text-stone-600">
+                      No HPD-routed 311 requests for this address in the last five years.
+                    </p>
+                  ) : (
+                    <p className="border-b border-stone-200 py-4 text-sm text-stone-600">
+                      Details for these requests could not be loaded.
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
 
