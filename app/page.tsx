@@ -79,6 +79,25 @@ function isNewComplaint(value?: string): boolean {
   return year === 2025 || year === 2026;
 }
 
+function getHeatComplaintSeverity(count: number): {
+  label: string;
+  className: string;
+} | null {
+  if (count > 50) {
+    return {
+      label: "CRITICAL ISSUE",
+      className: "border border-red-800 bg-red-100 text-red-950",
+    };
+  }
+  if (count >= 10 && count <= 50) {
+    return {
+      label: "RECURRING PROBLEM",
+      className: "border border-amber-700 bg-amber-100 text-amber-950",
+    };
+  }
+  return null;
+}
+
 export default function Home() {
   const [houseNumber, setHouseNumber] = useState("");
   const [streetName, setStreetName] = useState("");
@@ -109,6 +128,11 @@ export default function Home() {
     if (showArchive) return hpdViolations;
     return hpdViolations.filter((row) => isWithinLastFiveYears(row.inspectiondate));
   }, [hpdViolations, showArchive]);
+
+  const heatSeverityBadge = useMemo(
+    () => getHeatComplaintSeverity(heatHotWater311Last12Months ?? 0),
+    [heatHotWater311Last12Months],
+  );
 
   async function checkBuilding(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -415,11 +439,20 @@ export default function Home() {
               <p className="mt-2 text-xs text-stone-600">
                 311 service requests for heat or hot water at this address (last 12 months).
               </p>
-              <p className="mt-4 font-serif text-2xl font-light text-[#1A1A1A]">
-                <span className="font-semibold">{heatHotWater311Last12Months ?? 0}</span>{" "}
-                HEAT/HOT WATER complaint
-                {(heatHotWater311Last12Months ?? 0) === 1 ? "" : "s"}
-              </p>
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <p className="font-serif text-2xl font-light text-[#1A1A1A]">
+                  <span className="font-semibold">{heatHotWater311Last12Months ?? 0}</span>{" "}
+                  HEAT/HOT WATER complaint
+                  {(heatHotWater311Last12Months ?? 0) === 1 ? "" : "s"}
+                </p>
+                {heatSeverityBadge ? (
+                  <span
+                    className={`inline-flex shrink-0 border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${heatSeverityBadge.className}`}
+                  >
+                    {heatSeverityBadge.label}
+                  </span>
+                ) : null}
+              </div>
               {heat311Rows.length === 25 &&
               (heatHotWater311Last12Months ?? 0) > 25 ? (
                 <p className="mt-1 text-[11px] text-stone-500">
