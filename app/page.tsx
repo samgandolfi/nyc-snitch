@@ -3,13 +3,22 @@
 import { FormEvent, useMemo, useState } from "react";
 
 type SafetyLevel = "Green" | "Yellow" | "Red";
-type ComplaintActivity = {
-  house_number?: string;
-  house_street?: string;
-  date_entered?: string;
-  complaint_category?: string;
-  status?: string;
-  disposition_code?: string;
+
+/** DOB complaint count only; violation details come from HPD (wvxf-dwi5). */
+type HpdViolationRow = {
+  housenumber?: string;
+  streetname?: string;
+  class?: string;
+  novdescription?: string;
+  currentstatus?: string;
+  inspectiondate?: string;
+};
+
+type Heat311Row = {
+  unique_key?: string;
+  created_date?: string;
+  descriptor?: string;
+  complaint_type?: string;
 };
 
 /** NYC Open Data stores DOHMH “Active Rat Signs” as result value `Rat Activity`. */
@@ -27,23 +36,8 @@ const RODENT_INSPECTION_RESOURCE =
   "https://data.cityofnewyork.us/resource/p937-wjvj.json";
 const THREE_ONE_ONE_RESOURCE =
   "https://data.cityofnewyork.us/resource/erm2-nwe9.json";
-const DOB_COMPLAINT_CATEGORY_LABELS: Record<string, string> = {
-  "8A": "Illegal Residential Occupancy (Loft)",
-  "4A": "Illegal Hotel Rooms / Airbnb in Residential Building",
-  "1A": "Illegal Conversion: Commercial Space to Dwelling",
-  "2K": "Structurally Compromised Building",
-  "2L": "Facade (LL11/98) - Unsafe Notification",
-  "4G": "Illegal Conversion - No Access Follow-Up",
-  "5B": "Non-Compliance with Lightweight Materials (Fire Risk)",
-  "5C": "Structural Stability Impacted (New Construction)",
-};
-
-const DISPOSITION_CODE_LABELS: Record<string, string> = {
-  A1: "Buildings Violation(s) Served",
-  A8: "Violation Served ✅",
-  C4: "Inspector Access Denied (2nd Attempt) ❌",
-  R1: "Inspection - No Follow-up Required",
-};
+const HPD_VIOLATIONS_RESOURCE =
+  "https://data.cityofnewyork.us/resource/wvxf-dwi5.json";
 
 function getSafetyLevel(complaintCount: number): SafetyLevel {
   if (complaintCount <= 2) return "Green";
@@ -66,47 +60,6 @@ function formatEnteredDate(value?: string): string {
     day: "numeric",
     year: "numeric",
   }).format(parsedDate);
-}
-
-function getComplaintCategoryLabel(code?: string): string {
-  if (!code) return "Maintenance Report";
-  const normalized = code.trim().toUpperCase();
-  if (!normalized) return "Maintenance Report";
-  if (DOB_COMPLAINT_CATEGORY_LABELS[normalized]) {
-    return DOB_COMPLAINT_CATEGORY_LABELS[normalized];
-  }
-  if (normalized.startsWith("5")) return "System/Boiler Issue";
-  if (normalized.startsWith("4")) return "Occupancy/Space Issue";
-  return "Maintenance Report";
-}
-
-function getDispositionCodeLabel(code?: string): string {
-  if (!code) return "No disposition code";
-  const normalized = code.trim().toUpperCase();
-  if (!normalized) return "No disposition code";
-  return DISPOSITION_CODE_LABELS[normalized] || `Building Issue (Code [${normalized}])`;
-}
-
-function getCategoryEmoji(label: string, code?: string): string {
-  const normalizedCode = code?.trim().toUpperCase() || "";
-  if (
-    label.includes("Construction") ||
-    label.includes("Structural") ||
-    normalizedCode.startsWith("2")
-  ) {
-    return "🏗️";
-  }
-  if (
-    label.includes("Boiler") ||
-    label.includes("System") ||
-    normalizedCode.startsWith("5")
-  ) {
-    return "🚰";
-  }
-  if (label.includes("Occupancy") || normalizedCode.startsWith("4")) {
-    return "🏢";
-  }
-  return "⚠️";
 }
 
 function isWithinLastFiveYears(value?: string): boolean {
@@ -132,13 +85,14 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
   const [complaintCount, setComplaintCount] = useState<number | null>(null);
-  const [recentComplaints, setRecentComplaints] = useState<ComplaintActivity[]>([]);
+  const [hpdViolations, setHpdViolations] = useState<HpdViolationRow[]>([]);
   const [activeRatSignInspections, setActiveRatSignInspections] = useState<
     RodentInspectionRow[]
   >([]);
   const [heatHotWater311Last12Months, setHeatHotWater311Last12Months] = useState<
     number | null
   >(null);
+  const [heat311Rows, setHeat311Rows] = useState<Heat311Row[]>([]);
   const [error, setError] = useState("");
 
   const safetyLevel = useMemo(() => {
@@ -150,20 +104,19 @@ export default function Home() {
     return "border-stone-300 bg-white text-[#1A1A1A]";
   }, [safetyLevel]);
 
-  const visibleComplaints = useMemo(() => {
-    if (showArchive) return recentComplaints;
-    return recentComplaints.filter((complaint) =>
-      isWithinLastFiveYears(complaint.date_entered),
-    );
-  }, [recentComplaints, showArchive]);
+  const visibleHpdViolations = useMemo(() => {
+    if (showArchive) return hpdViolations;
+    return hpdViolations.filter((row) => isWithinLastFiveYears(row.inspectiondate));
+  }, [hpdViolations, showArchive]);
 
   async function checkBuilding(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
     setComplaintCount(null);
-    setRecentComplaints([]);
+    setHpdViolations([]);
     setActiveRatSignInspections([]);
     setHeatHotWater311Last12Months(null);
+    setHeat311Rows([]);
     setShowArchive(false);
 
     const trimmedHouseNumber = houseNumber.trim().replace(/\s+/g, " ");
@@ -183,12 +136,12 @@ export default function Home() {
       $where: whereClause,
     });
 
-    const activityParams = new URLSearchParams({
-      $select:
-        "house_number,house_street,date_entered,complaint_category,status,disposition_code",
-      $where: whereClause,
-      $order: "date_entered DESC",
-      $limit: "10",
+    const hpdWhere = `housenumber='${escapedHouseNumber}' AND upper(streetname)='${escapedStreetName}'`;
+    const hpdParams = new URLSearchParams({
+      $select: "housenumber,streetname,class,novdescription,currentstatus,inspectiondate",
+      $where: hpdWhere,
+      $order: "inspectiondate DESC",
+      $limit: "15",
     });
 
     const rodentWhereAddress = `house_number='${escapedHouseNumber}' AND upper(street_name)='${escapedStreetName}'`;
@@ -207,9 +160,16 @@ export default function Home() {
     heatCutoff.setFullYear(heatCutoff.getFullYear() - 1);
     const heatCutoffIso = `${heatCutoff.toISOString().slice(0, 10)}T00:00:00.000`;
     const heatAddressMatch = `upper(street_name)='${escapedStreetName}' AND upper(incident_address) LIKE upper('${escapedHouseNumber} %')`;
-    const heatParams = new URLSearchParams({
+    const heatWhere = `${heatAddressMatch} AND complaint_type='HEAT/HOT WATER' AND created_date >= '${heatCutoffIso}'`;
+    const heatCountParams = new URLSearchParams({
       $select: "count(*) as heat_count",
-      $where: `${heatAddressMatch} AND complaint_type='HEAT/HOT WATER' AND created_date >= '${heatCutoffIso}'`,
+      $where: heatWhere,
+    });
+    const heatListParams = new URLSearchParams({
+      $select: "unique_key,created_date,descriptor,complaint_type",
+      $where: heatWhere,
+      $order: "created_date DESC",
+      $limit: "25",
     });
 
     setIsLoading(true);
@@ -228,56 +188,72 @@ export default function Home() {
         return Array.isArray(raw) ? raw : [];
       });
 
-      const heat311Fetch = fetch(
-        `${THREE_ONE_ONE_RESOURCE}?${heatParams.toString()}`,
-        { headers, cache: "no-store" },
-      ).then(async (response) => {
-        if (!response.ok) return null;
-        const raw = (await response.json()) as Array<{ heat_count?: string }>;
-        const n = Number(raw?.[0]?.heat_count ?? 0);
-        return Number.isFinite(n) && n >= 0 ? n : null;
+      const heat311Fetch = Promise.all([
+        fetch(`${THREE_ONE_ONE_RESOURCE}?${heatCountParams.toString()}`, {
+          headers,
+          cache: "no-store",
+        }),
+        fetch(`${THREE_ONE_ONE_RESOURCE}?${heatListParams.toString()}`, {
+          headers,
+          cache: "no-store",
+        }),
+      ]).then(async ([countResponse, listResponse]) => {
+        if (!countResponse.ok) return { count: 0, rows: [] as Heat311Row[] };
+        const countRaw = (await countResponse.json()) as Array<{ heat_count?: string }>;
+        const n = Number(countRaw?.[0]?.heat_count ?? 0);
+        const count = Number.isFinite(n) && n >= 0 ? n : 0;
+        let rows: Heat311Row[] = [];
+        if (listResponse.ok) {
+          const listRaw = (await listResponse.json()) as Heat311Row[];
+          rows = Array.isArray(listRaw) ? listRaw : [];
+        }
+        return { count, rows };
       });
 
-      const [countResponse, activityResponse, rodentRows, heatCount] =
-        await Promise.all([
-          fetch(
-            `https://data.cityofnewyork.us/resource/vztk-gaf7.json?${countParams.toString()}`,
-            {
-              headers,
-              cache: "no-store",
-            },
-          ),
-          fetch(
-            `https://data.cityofnewyork.us/resource/vztk-gaf7.json?${activityParams.toString()}`,
-            {
-              headers,
-              cache: "no-store",
-            },
-          ),
-          rodentFetch.catch(() => [] as RodentInspectionRow[]),
-          heat311Fetch.catch(() => null),
-        ]);
+      const hpdFetch = fetch(`${HPD_VIOLATIONS_RESOURCE}?${hpdParams.toString()}`, {
+        headers,
+        cache: "no-store",
+      }).then(async (response) => {
+        if (!response.ok) return [] as HpdViolationRow[];
+        const raw = (await response.json()) as HpdViolationRow[];
+        return Array.isArray(raw) ? raw : [];
+      });
 
-      if (!countResponse.ok || !activityResponse.ok) {
+      const [countResponse, hpdRows, rodentRows, heat311Result] = await Promise.all([
+        fetch(
+          `https://data.cityofnewyork.us/resource/vztk-gaf7.json?${countParams.toString()}`,
+          {
+            headers,
+            cache: "no-store",
+          },
+        ),
+        hpdFetch.catch(() => [] as HpdViolationRow[]),
+        rodentFetch.catch(() => [] as RodentInspectionRow[]),
+        heat311Fetch.catch(() => ({ count: 0, rows: [] as Heat311Row[] })),
+      ]);
+
+      if (!countResponse.ok) {
         throw new Error("NYC Open Data request failed.");
       }
 
       const data = (await countResponse.json()) as Array<{ complaint_count?: string }>;
       const count = Number(data?.[0]?.complaint_count ?? 0);
-      const activityData = (await activityResponse.json()) as ComplaintActivity[];
 
       if (!Number.isFinite(count) || count < 0) {
         throw new Error("Received unexpected complaint data.");
       }
 
       setComplaintCount(count);
-      setRecentComplaints(Array.isArray(activityData) ? activityData : []);
+      setHpdViolations(hpdRows);
       setActiveRatSignInspections(rodentRows);
-      setHeatHotWater311Last12Months(heatCount ?? 0);
+      setHeatHotWater311Last12Months(heat311Result.count);
+      setHeat311Rows(heat311Result.rows);
     } catch {
       setError("Could not fetch complaints right now. Please try again.");
       setActiveRatSignInspections([]);
       setHeatHotWater311Last12Months(null);
+      setHeat311Rows([]);
+      setHpdViolations([]);
     } finally {
       setIsLoading(false);
     }
@@ -349,8 +325,12 @@ export default function Home() {
 
             <div className="mt-8 border-t border-stone-200 pt-6">
               <h3 className="text-xs font-semibold uppercase tracking-[0.28em] text-[#3D362F]">
-                Complaints Found
+                HPD Violations
               </h3>
+              <p className="mt-2 text-xs text-stone-600">
+                Housing Maintenance Code violations for this address (most recent first). The
+                count above reflects DOB complaints filed for the same address.
+              </p>
               <button
                 type="button"
                 onClick={() => setShowArchive((current) => !current)}
@@ -359,40 +339,36 @@ export default function Home() {
                 {showArchive ? "Hide Archive" : "See Archive"}
               </button>
               <div className="mt-4 max-h-96 overflow-y-auto">
-                {visibleComplaints.length > 0 ? (
+                {visibleHpdViolations.length > 0 ? (
                   <ul>
-                    {visibleComplaints.map((complaint, index) => {
-                      const categoryLabel = getComplaintCategoryLabel(
-                        complaint.complaint_category,
-                      );
-                      const emoji = getCategoryEmoji(
-                        categoryLabel,
-                        complaint.complaint_category,
-                      );
-                      const isNew = isNewComplaint(complaint.date_entered);
+                    {visibleHpdViolations.map((row, index) => {
+                      const isNew = isNewComplaint(row.inspectiondate);
+                      const title =
+                        row.class != null && String(row.class).trim() !== ""
+                          ? `Class ${String(row.class).trim()} violation`
+                          : "HPD violation";
 
                       return (
                         <li
-                          key={`${complaint.date_entered ?? "unknown"}-${index}`}
+                          key={`${row.inspectiondate ?? "unknown"}-${index}`}
                           className="border-b border-stone-200 py-4 text-sm text-[#1A1A1A]"
                         >
-                          <p className="flex items-center gap-2 font-serif text-lg font-light text-[#1A1A1A]">
-                            <span className="text-2xl leading-none">{emoji}</span>
-                            <span>{categoryLabel}</span>
+                          <p className="flex flex-wrap items-center gap-2 font-serif text-lg font-light text-[#1A1A1A]">
+                            <span>{title}</span>
                             {isNew ? (
                               <span className="border border-[#C9A66B] bg-[#E8D8B8]/45 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#3D362F]">
                                 New
                               </span>
                             ) : null}
                           </p>
-                          <p className="mt-1 text-xs tracking-wide text-stone-600">
-                            Date Entered: {formatEnteredDate(complaint.date_entered)}
+                          <p className="mt-1 text-[11px] leading-snug text-stone-500">
+                            {row.novdescription?.trim() || "No NOV description on file."}
+                          </p>
+                          <p className="mt-2 text-xs tracking-wide text-stone-600">
+                            Status: {row.currentstatus || "Not specified"}
                           </p>
                           <p className="mt-1 text-xs tracking-wide text-stone-600">
-                            Status: {complaint.status || "No status provided"}
-                          </p>
-                          <p className="mt-1 text-xs tracking-wide text-stone-600">
-                            Disposition: {getDispositionCodeLabel(complaint.disposition_code)}
+                            Inspection: {formatEnteredDate(row.inspectiondate)}
                           </p>
                         </li>
                       );
@@ -400,7 +376,7 @@ export default function Home() {
                   </ul>
                 ) : (
                   <p className="border-b border-stone-200 py-4 text-sm text-stone-600">
-                    No specific details found.
+                    No HPD violations found for this address.
                   </p>
                 )}
               </div>
@@ -421,6 +397,43 @@ export default function Home() {
                 HEAT/HOT WATER complaint
                 {(heatHotWater311Last12Months ?? 0) === 1 ? "" : "s"}
               </p>
+              {heat311Rows.length === 25 &&
+              (heatHotWater311Last12Months ?? 0) > 25 ? (
+                <p className="mt-1 text-[11px] text-stone-500">
+                  List shows the 25 most recent; the total above is the full count for the last
+                  12 months.
+                </p>
+              ) : null}
+              <div className="mt-4 max-h-72 overflow-y-auto">
+                {heat311Rows.length > 0 ? (
+                  <ul>
+                    {heat311Rows.map((row, index) => (
+                      <li
+                        key={row.unique_key ?? `${row.created_date ?? "u"}-${index}`}
+                        className="border-b border-stone-200 py-4 text-sm text-[#1A1A1A]"
+                      >
+                        <p className="font-serif text-lg font-light text-[#1A1A1A]">
+                          {row.complaint_type?.trim() || "HEAT/HOT WATER"}
+                        </p>
+                        <p className="mt-1 text-[11px] leading-snug text-stone-500">
+                          {row.descriptor?.trim() || "No descriptor provided."}
+                        </p>
+                        <p className="mt-2 text-xs tracking-wide text-stone-600">
+                          Filed: {formatEnteredDate(row.created_date)}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (heatHotWater311Last12Months ?? 0) === 0 ? (
+                  <p className="border-b border-stone-200 py-4 text-sm text-stone-600">
+                    No heat or hot water 311 requests in the last 12 months.
+                  </p>
+                ) : (
+                  <p className="border-b border-stone-200 py-4 text-sm text-stone-600">
+                    Details for these requests could not be loaded.
+                  </p>
+                )}
+              </div>
             </div>
 
             <div className="mt-8 border-t border-stone-200 pt-6">
@@ -445,7 +458,10 @@ export default function Home() {
                         <p className="font-serif text-lg font-light text-[#1A1A1A]">
                           Active Rat Signs
                         </p>
-                        <p className="mt-1 text-xs tracking-wide text-stone-600">
+                        <p className="mt-1 text-[11px] leading-snug text-stone-500">
+                          {row.result?.trim() || "No inspection result text."}
+                        </p>
+                        <p className="mt-2 text-xs tracking-wide text-stone-600">
                           Inspection date: {formatEnteredDate(row.inspection_date)}
                         </p>
                         <p className="mt-1 text-xs tracking-wide text-stone-600">
