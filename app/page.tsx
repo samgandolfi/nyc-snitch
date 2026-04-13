@@ -121,6 +121,17 @@ function RecentBadge() {
   );
 }
 
+/** Newest first: primary `date_entered`, tie-break `inspection_date`, then complaint #. */
+function compareDobComplaintsNewestFirst(a: DobComplaintRow, b: DobComplaintRow): number {
+  const tb = parseDateForSort(b.date_entered)?.getTime() ?? 0;
+  const ta = parseDateForSort(a.date_entered)?.getTime() ?? 0;
+  if (tb !== ta) return tb - ta;
+  const ib = parseDateForSort(b.inspection_date)?.getTime() ?? 0;
+  const ia = parseDateForSort(a.inspection_date)?.getTime() ?? 0;
+  if (ib !== ia) return ib - ia;
+  return (b.complaint_number ?? "").localeCompare(a.complaint_number ?? "", "en");
+}
+
 function isWithinLastFiveYears(value?: string): boolean {
   const parsedDate = parseDateForSort(value);
   if (!parsedDate) return false;
@@ -557,11 +568,7 @@ export default function Home() {
       if (dobListResponse.ok) {
         const raw = (await dobListResponse.json()) as DobComplaintRow[];
         dobRows = Array.isArray(raw) ? raw : [];
-        dobRows.sort((a, b) => {
-          const tb = parseDateForSort(b.date_entered)?.getTime() ?? 0;
-          const ta = parseDateForSort(a.date_entered)?.getTime() ?? 0;
-          return tb - ta;
-        });
+        dobRows.sort(compareDobComplaintsNewestFirst);
       }
       setDobComplaints(dobRows);
 
