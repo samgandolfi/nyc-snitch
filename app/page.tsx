@@ -972,6 +972,7 @@ export default function Home() {
                         dobComplaints.map((row, index) => {
                           const cat = (row.complaint_category ?? "").trim();
                           const label = getDobComplaintCategoryLabel(cat);
+                          const isHighPriorityDobSafetyAlert = cat === "67";
                           const st = (row.status ?? "").trim();
                           const num = (row.complaint_number ?? "").trim();
                           return (
@@ -983,7 +984,14 @@ export default function Home() {
                                 🏗️
                               </span>
                               <div className="min-w-0 flex-1">
-                                <p className="text-base font-medium text-[#1A1A1A]">{label}</p>
+                                <p
+                                  className={`text-base font-medium ${
+                                    isHighPriorityDobSafetyAlert ? "text-red-700" : "text-[#1A1A1A]"
+                                  }`}
+                                >
+                                  {isHighPriorityDobSafetyAlert ? "⚠️ " : ""}
+                                  {label}
+                                </p>
                                 {cat ? (
                                   <p className="mt-1 text-xs tabular-nums text-stone-500">
                                     DOB code {cat}
