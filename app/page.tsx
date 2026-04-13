@@ -62,6 +62,7 @@ const HPD_VIOLATIONS_RESOURCE =
 const DOB_COMPLAINTS_RESOURCE =
   "https://data.cityofnewyork.us/resource/vztk-gaf7.json";
 
+/** Buckets apply to DOB complaint count in the trailing 24 months only. */
 function getSafetyLevel(complaintCount: number): SafetyLevel {
   if (complaintCount <= 2) return "Green";
   if (complaintCount <= 5) return "Yellow";
@@ -275,7 +276,10 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
   const [showAllDetails, setShowAllDetails] = useState(false);
+  /** DOB complaints in the last 24 months — drives safety score + Legal summary DOB number. */
   const [complaintCount, setComplaintCount] = useState<number | null>(null);
+  /** All-time DOB complaint count at this address (for list vs. total messaging). */
+  const [dobComplaintsTotalOnFile, setDobComplaintsTotalOnFile] = useState<number | null>(null);
   const [dobComplaints, setDobComplaints] = useState<DobComplaintRow[]>([]);
   const [hpdViolations, setHpdViolations] = useState<HpdViolationRow[]>([]);
   const [activeRatSignInspections, setActiveRatSignInspections] = useState<
@@ -356,6 +360,7 @@ export default function Home() {
     event.preventDefault();
     setError("");
     setComplaintCount(null);
+    setDobComplaintsTotalOnFile(null);
     setDobComplaints([]);
     setHpdViolations([]);
     setActiveRatSignInspections([]);
@@ -388,7 +393,22 @@ export default function Home() {
       .join(" OR ");
     const whereClause = `house_number='${escapedHouseNumber}' AND zip_code='${escapedZip}' AND (${streetOrDob})`;
 
+    /** `date_entered` is text `MM/DD/YYYY`; convert to `YYYY-MM-DD` for lexicographic SoQL compare. */
+    const dobDateEnteredIsoExpr =
+      "(substring(date_entered,7,4)||'-'||substring(date_entered,1,2)||'-'||substring(date_entered,4,2))";
+    const safetyCutoff24Mo = new Date();
+    safetyCutoff24Mo.setMonth(safetyCutoff24Mo.getMonth() - 24);
+    const cutoffY = safetyCutoff24Mo.getFullYear();
+    const cutoffM = String(safetyCutoff24Mo.getMonth() + 1).padStart(2, "0");
+    const cutoffD = String(safetyCutoff24Mo.getDate()).padStart(2, "0");
+    const safetyScoreCutoffIso = `${cutoffY}-${cutoffM}-${cutoffD}`;
+    const whereClauseDobLast24Months = `${whereClause} AND ${dobDateEnteredIsoExpr} >= '${safetyScoreCutoffIso}'`;
+
     const countParams = new URLSearchParams({
+      $select: "count(*) as complaint_count",
+      $where: whereClauseDobLast24Months,
+    });
+    const countAllTimeParams = new URLSearchParams({
       $select: "count(*) as complaint_count",
       $where: whereClause,
     });
@@ -535,9 +555,13 @@ export default function Home() {
         return { count, rows };
       });
 
-      const [countResponse, dobListResponse, hpdRows, rodentRows, heat311Result, tenant311Result] =
+      const [countResponse, countAllTimeResponse, dobListResponse, hpdRows, rodentRows, heat311Result, tenant311Result] =
         await Promise.all([
           fetch(`${DOB_COMPLAINTS_RESOURCE}?${countParams.toString()}`, {
+            headers,
+            cache: "no-store",
+          }),
+          fetch(`${DOB_COMPLAINTS_RESOURCE}?${countAllTimeParams.toString()}`, {
             headers,
             cache: "no-store",
           }),
@@ -564,6 +588,14 @@ export default function Home() {
 
       setComplaintCount(count);
 
+      if (countAllTimeResponse.ok) {
+        const allRaw = (await countAllTimeResponse.json()) as Array<{ complaint_count?: string }>;
+        const allN = Number(allRaw?.[0]?.complaint_count ?? 0);
+        setDobComplaintsTotalOnFile(Number.isFinite(allN) && allN >= 0 ? allN : null);
+      } else {
+        setDobComplaintsTotalOnFile(null);
+      }
+
       let dobRows: DobComplaintRow[] = [];
       if (dobListResponse.ok) {
         const raw = (await dobListResponse.json()) as DobComplaintRow[];
@@ -580,6 +612,8 @@ export default function Home() {
       setTenant311Rows(tenant311Result.rows);
     } catch {
       setError("Could not fetch complaints right now. Please try again.");
+      setComplaintCount(null);
+      setDobComplaintsTotalOnFile(null);
       setDobComplaints([]);
       setActiveRatSignInspections([]);
       setHeatHotWater311Last12Months(null);
@@ -662,6 +696,9 @@ export default function Home() {
                 <span className="max-w-[14rem] text-center text-xs leading-snug opacity-90">
                   {getSafetyLabel(safetyLevel)}
                 </span>
+                <span className="mt-1 max-w-[15rem] text-center text-[10px] leading-snug text-stone-500">
+                  Based on activity from the last 24 months
+                </span>
               </div>
             </div>
 
@@ -735,7 +772,7 @@ export default function Home() {
                         {complaintCount}
                       </p>
                       <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-500">
-                        DOB complaints (safety score)
+                        DOB complaints (safety score · last 24 mo)
                       </p>
                     </div>
                     <div className="border-t border-stone-200/80 pt-3">
@@ -771,9 +808,11 @@ export default function Home() {
               <div className="space-y-8">
                 <div className="rounded-2xl border border-stone-100/90 bg-white p-6 text-sm leading-relaxed text-stone-600 shadow-md md:p-8">
                   <p>
-                    <span className="font-semibold text-[#1A1A1A]">Safety score</span> uses DOB
-                    complaints at this address + ZIP (Green 0–2 · Yellow 3–5 · Red 6+). Higher counts
-                    mean more city attention on the building.
+                    <span className="font-semibold text-[#1A1A1A]">Safety score</span> counts DOB
+                    complaints from the <span className="font-semibold">last 24 months</span> at this
+                    address + ZIP (Green 0–2 · Yellow 3–5 · Red 6+). Older complaints are ignored for
+                    the score; the DOB list below may still show full history. Higher recent counts mean
+                    more city attention on the building.
                   </p>
                 </div>
 
@@ -960,11 +999,12 @@ export default function Home() {
                       types (e.g. structural, elevator, construction).
                     </p>
                     {dobComplaints.length > 0 &&
-                    complaintCount !== null &&
-                    dobComplaints.length < complaintCount ? (
+                    dobComplaintsTotalOnFile !== null &&
+                    dobComplaints.length < dobComplaintsTotalOnFile ? (
                       <p className="mt-3 text-xs text-stone-500">
-                        Showing {dobComplaints.length} most recent (API limit); total count is{" "}
-                        {complaintCount}.
+                        Showing {dobComplaints.length} most recent on file (API limit);{" "}
+                        {dobComplaintsTotalOnFile} total DOB complaint
+                        {dobComplaintsTotalOnFile === 1 ? "" : "s"} at this address (all years).
                       </p>
                     ) : null}
                     <ul className="mt-6 max-h-96 space-y-4 overflow-y-auto">
@@ -1040,10 +1080,10 @@ export default function Home() {
                             </li>
                           );
                         })
-                      ) : (complaintCount ?? 0) > 0 ? (
+                      ) : (dobComplaintsTotalOnFile ?? 0) > 0 || (complaintCount ?? 0) > 0 ? (
                         <li className="text-sm text-stone-600">
-                          Couldn&apos;t load DOB complaint rows; the count above still reflects Open
-                          Data.
+                          Couldn&apos;t load DOB complaint rows; the DOB counts above still reflect
+                          Open Data.
                         </li>
                       ) : (
                         <li className="text-sm text-stone-600">No DOB complaints on file for this address.</li>
