@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
+import { getDobComplaintCategoryLabel } from "@/lib/dob-complaint-categories";
 
 type SafetyLevel = "Green" | "Yellow" | "Red";
 
@@ -73,21 +74,56 @@ function getSafetyLabel(level: SafetyLevel): string {
   return "High complaint activity";
 }
 
+/** Parses NYC Open Data date strings: ISO, `MM/DD/YYYY` (DOB), or leading `YYYY-MM-DD`. */
+function parseDateForSort(value?: string): Date | null {
+  if (!value?.trim()) return null;
+  const v = value.trim();
+  let d = new Date(v);
+  if (!Number.isNaN(d.getTime())) return d;
+  const mdy = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(v);
+  if (mdy) {
+    d = new Date(Number(mdy[3]), Number(mdy[1]) - 1, Number(mdy[2]));
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  const ymd = /^(\d{4})-(\d{2})-(\d{2})/.exec(v);
+  if (ymd) {
+    d = new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3]));
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  return null;
+}
+
 function formatEnteredDate(value?: string): string {
-  if (!value) return "Unknown date";
-  const parsedDate = new Date(value);
-  if (Number.isNaN(parsedDate.getTime())) return "Unknown date";
+  const d = parseDateForSort(value);
+  if (!d) return "Unknown date";
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
-  }).format(parsedDate);
+  }).format(d);
+}
+
+function isWithinLast30Days(value?: string): boolean {
+  const d = parseDateForSort(value);
+  if (!d) return false;
+  const now = new Date();
+  if (d.getTime() > now.getTime()) return false;
+  const cutoff = new Date(now);
+  cutoff.setDate(cutoff.getDate() - 30);
+  return d.getTime() >= cutoff.getTime();
+}
+
+function RecentBadge() {
+  return (
+    <span className="inline-block shrink-0 rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.14em] text-blue-700">
+      RECENT
+    </span>
+  );
 }
 
 function isWithinLastFiveYears(value?: string): boolean {
-  if (!value) return false;
-  const parsedDate = new Date(value);
-  if (Number.isNaN(parsedDate.getTime())) return false;
+  const parsedDate = parseDateForSort(value);
+  if (!parsedDate) return false;
   const cutoffDate = new Date();
   cutoffDate.setFullYear(cutoffDate.getFullYear() - 5);
   return parsedDate >= cutoffDate;
@@ -113,8 +149,8 @@ function dedupe311ByUniqueKey(rows: Tenant311Row[]): Tenant311Row[] {
     if (!seen.has(fallback)) seen.set(fallback, row);
   }
   return Array.from(seen.values()).sort((a, b) => {
-    const tb = new Date(b.created_date ?? 0).getTime();
-    const ta = new Date(a.created_date ?? 0).getTime();
+    const tb = parseDateForSort(b.created_date)?.getTime() ?? 0;
+    const ta = parseDateForSort(a.created_date)?.getTime() ?? 0;
     return tb - ta;
   });
 }
@@ -282,9 +318,23 @@ export default function Home() {
   }, [safetyLevel]);
 
   const visibleHpdViolations = useMemo(() => {
-    if (showArchive) return hpdViolations;
-    return hpdViolations.filter((row) => isWithinLastFiveYears(row.inspectiondate));
+    const base = showArchive
+      ? hpdViolations
+      : hpdViolations.filter((row) => isWithinLastFiveYears(row.inspectiondate));
+    return [...base].sort((a, b) => {
+      const tb = parseDateForSort(b.inspectiondate)?.getTime() ?? 0;
+      const ta = parseDateForSort(a.inspectiondate)?.getTime() ?? 0;
+      return tb - ta;
+    });
   }, [hpdViolations, showArchive]);
+
+  const sortedTenant311Rows = useMemo(() => {
+    return [...tenant311Rows].sort((a, b) => {
+      const tb = parseDateForSort(b.created_date)?.getTime() ?? 0;
+      const ta = parseDateForSort(a.created_date)?.getTime() ?? 0;
+      return tb - ta;
+    });
+  }, [tenant311Rows]);
 
   const heatSeverityBadge = useMemo(
     () => getHeatComplaintSeverity(heatHotWater311Last12Months ?? 0),
@@ -507,6 +557,11 @@ export default function Home() {
       if (dobListResponse.ok) {
         const raw = (await dobListResponse.json()) as DobComplaintRow[];
         dobRows = Array.isArray(raw) ? raw : [];
+        dobRows.sort((a, b) => {
+          const tb = parseDateForSort(b.date_entered)?.getTime() ?? 0;
+          const ta = parseDateForSort(a.date_entered)?.getTime() ?? 0;
+          return tb - ta;
+        });
       }
       setDobComplaints(dobRows);
 
@@ -847,9 +902,17 @@ export default function Home() {
                                     </span>
                                   ) : null}
                                 </p>
-                                <p className="mt-2 text-sm text-stone-500">
-                                  {formatEnteredDate(row.inspectiondate)} ·{" "}
-                                  {[row.housenumber, row.streetname].filter(Boolean).join(" ") || "—"}
+                                <p className="mt-2 flex flex-wrap items-center gap-2 text-sm text-stone-500">
+                                  <span className="inline-flex flex-wrap items-center gap-2">
+                                    <span>{formatEnteredDate(row.inspectiondate)}</span>
+                                    {isWithinLast30Days(row.inspectiondate) ? (
+                                      <RecentBadge />
+                                    ) : null}
+                                  </span>
+                                  <span>
+                                    ·{" "}
+                                    {[row.housenumber, row.streetname].filter(Boolean).join(" ") || "—"}
+                                  </span>
                                 </p>
                                 <details className="mt-3">
                                   <summary className="cursor-pointer text-sm font-medium text-[#3D362F] underline decoration-stone-300 underline-offset-2 hover:decoration-[#C9A66B]">
@@ -901,6 +964,7 @@ export default function Home() {
                       {dobComplaints.length > 0 ? (
                         dobComplaints.map((row, index) => {
                           const cat = (row.complaint_category ?? "").trim();
+                          const label = getDobComplaintCategoryLabel(cat);
                           const st = (row.status ?? "").trim();
                           const num = (row.complaint_number ?? "").trim();
                           return (
@@ -912,22 +976,21 @@ export default function Home() {
                                 🏗️
                               </span>
                               <div className="min-w-0 flex-1">
-                                <p className="text-base font-medium text-[#1A1A1A]">
-                                  {cat ? (
-                                    <>
-                                      Category{" "}
-                                      <span className="tabular-nums">{cat}</span>
-                                    </>
-                                  ) : (
-                                    "Category not listed"
-                                  )}
-                                </p>
+                                <p className="text-base font-medium text-[#1A1A1A]">{label}</p>
+                                {cat ? (
+                                  <p className="mt-1 text-xs tabular-nums text-stone-500">
+                                    DOB code {cat}
+                                  </p>
+                                ) : null}
                                 <p className="mt-2 text-sm font-medium text-stone-700">
                                   Status: {st || "—"}
                                 </p>
-                                <p className="mt-2 text-sm text-stone-500">
-                                  Entered {formatEnteredDate(row.date_entered)}
-                                  {num ? ` · Complaint #${num}` : ""}
+                                <p className="mt-2 flex flex-wrap items-center gap-2 text-sm text-stone-500">
+                                  <span>
+                                    Entered {formatEnteredDate(row.date_entered)}
+                                    {num ? ` · Complaint #${num}` : ""}
+                                  </span>
+                                  {isWithinLast30Days(row.date_entered) ? <RecentBadge /> : null}
                                 </p>
                                 {(row.inspection_date?.trim() ||
                                   row.disposition_code?.trim() ||
@@ -999,8 +1062,8 @@ export default function Home() {
                       </p>
                     ) : null}
                     <ul className="mt-6 max-h-96 space-y-4 overflow-y-auto">
-                      {tenant311Rows.length > 0 ? (
-                        tenant311Rows.map((row, index) => {
+                      {sortedTenant311Rows.length > 0 ? (
+                        sortedTenant311Rows.map((row, index) => {
                           const em = get311Emoji(row.complaint_type, row.descriptor);
                           const desc = row.descriptor?.trim() ?? "";
                           return (
@@ -1013,8 +1076,14 @@ export default function Home() {
                                 <p className="text-base font-medium text-[#1A1A1A]">
                                   {row.complaint_type?.trim() || "311 request"}
                                 </p>
-                                <p className="mt-2 text-sm text-stone-500">
-                                  {formatEnteredDate(row.created_date)} · {row.status || "—"}
+                                <p className="mt-2 flex flex-wrap items-center gap-2 text-sm text-stone-500">
+                                  <span className="inline-flex flex-wrap items-center gap-2">
+                                    <span>{formatEnteredDate(row.created_date)}</span>
+                                    {isWithinLast30Days(row.created_date) ? (
+                                      <RecentBadge />
+                                    ) : null}
+                                  </span>
+                                  <span>· {row.status || "—"}</span>
                                 </p>
                                 {desc.length > 0 ? (
                                   <details className="mt-3">
