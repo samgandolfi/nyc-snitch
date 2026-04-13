@@ -215,6 +215,7 @@ export default function Home() {
   const [zipCode, setZipCode] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
+  const [showAllDetails, setShowAllDetails] = useState(false);
   const [complaintCount, setComplaintCount] = useState<number | null>(null);
   const [hpdViolations, setHpdViolations] = useState<HpdViolationRow[]>([]);
   const [activeRatSignInspections, setActiveRatSignInspections] = useState<
@@ -238,6 +239,18 @@ export default function Home() {
       "rounded-2xl bg-white p-8 text-[#1A1A1A] shadow-lg md:p-10 border border-stone-100/90";
     if (safetyLevel === "Red") {
       return `${base} border-rose-200/60 bg-gradient-to-b from-[#fff1f2] via-[#fff5f5] to-white`;
+    }
+    if (safetyLevel === "Yellow") {
+      return `${base} border-amber-200/50 bg-gradient-to-b from-[#fffbeb] to-white`;
+    }
+    return base;
+  }, [safetyLevel]);
+
+  const summaryBoxClass = useMemo(() => {
+    const base =
+      "flex flex-col rounded-2xl border border-stone-100/90 bg-white p-6 text-[#1A1A1A] shadow-lg md:p-8";
+    if (safetyLevel === "Red") {
+      return `${base} border-rose-200/50 bg-gradient-to-b from-[#fff1f2] to-white`;
     }
     if (safetyLevel === "Yellow") {
       return `${base} border-amber-200/50 bg-gradient-to-b from-[#fffbeb] to-white`;
@@ -276,6 +289,7 @@ export default function Home() {
     setTenant311Rows([]);
     setTenant311Count(null);
     setShowArchive(false);
+    setShowAllDetails(false);
 
     const trimmedHouseNumber = houseNumber.trim().replace(/\s+/g, " ");
     const trimmedStreetName = streetName.trim().toUpperCase();
@@ -487,21 +501,14 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-[#FDFCFB] text-[#1A1A1A]">
-      <main className="mx-auto flex w-full max-w-5xl flex-col gap-10 px-8 py-14 md:px-12">
-        <section className="border border-stone-300 bg-white p-10">
-          <p className="text-xs font-medium uppercase tracking-[0.32em] text-[#3D362F]">
-            NYC Building Snitch
-          </p>
-          <h1 className="mt-5 font-serif text-5xl font-light tracking-wide text-[#1A1A1A] md:text-6xl">
-          The Landlord Red-Flag Index
+      <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-6 md:gap-6 md:px-10 md:py-8">
+        <section className="border border-stone-300 bg-white px-5 py-5 md:px-6 md:py-6">
+          <h1 className="font-sans text-2xl font-bold uppercase tracking-[0.12em] text-[#1A1A1A] md:text-3xl">
+            NYC SNITCH
           </h1>
-          <p className="mt-4 max-w-3xl text-sm leading-7 text-stone-600">
-            Search by house number, street name, and ZIP code to review complaint activity from
-            NYC Open Data and narrow results to the building you mean.
-          </p>
 
           <form
-            className="mt-10 grid border border-stone-300 bg-white p-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)_auto]"
+            className="mt-4 grid border border-stone-300 bg-white p-3 md:mt-5 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)_auto] md:p-4"
             onSubmit={checkBuilding}
           >
             <input
@@ -536,12 +543,12 @@ export default function Home() {
             </button>
           </form>
 
-          {error ? <p className="mt-4 text-sm text-red-700">{error}</p> : null}
+          {error ? <p className="mt-3 text-sm text-red-700">{error}</p> : null}
         </section>
 
         {complaintCount !== null && safetyLevel ? (
           <section className="space-y-8 pb-6">
-            {/* Snitch hero */}
+            {/* Address + safety score only */}
             <div className="flex flex-col items-center justify-center gap-5 px-2 text-center md:flex-row md:flex-wrap md:gap-6">
               <h2 className="max-w-4xl font-serif text-4xl font-light leading-tight tracking-wide text-[#1A1A1A] sm:text-5xl md:text-6xl lg:text-7xl">
                 {houseNumber.trim()} {streetName.trim().toUpperCase()}{" "}
@@ -562,29 +569,117 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Quick stats */}
-            <div className="rounded-2xl border border-stone-100/90 bg-white p-8 shadow-lg md:p-10">
-              <div className="flex flex-col gap-8 sm:flex-row sm:flex-wrap sm:items-end sm:justify-center sm:gap-14">
-                <div className="flex items-end justify-center gap-4 sm:justify-start">
-                  <span className="text-6xl leading-none md:text-7xl" aria-hidden>
-                    📋
+            <div className="grid gap-5 md:grid-cols-3 md:gap-6">
+              <div className={summaryBoxClass}>
+                <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-end">
+                  <span className="text-5xl leading-none md:text-6xl" aria-hidden>
+                    🔥
                   </span>
-                  <div>
-                    <p className="font-serif text-5xl font-light tabular-nums leading-none md:text-6xl">
-                      {complaintCount}
-                    </p>
-                    <p className="mt-3 text-[10px] font-semibold uppercase tracking-[0.22em] text-stone-500">
-                      DOB complaints
+                  <div className="min-w-0 flex-1 text-center sm:text-left">
+                    <h3 className="text-xs font-semibold uppercase tracking-[0.28em] text-[#3D362F]">
+                      Heat
+                    </h3>
+                    <div className="mt-3 flex flex-wrap items-end justify-center gap-3 sm:justify-start">
+                      <p className="font-serif text-5xl font-light tabular-nums leading-none md:text-6xl">
+                        {heatHotWater311Last12Months ?? 0}
+                      </p>
+                      {heatSeverityBadge ? (
+                        <span
+                          className={`inline-flex shrink-0 rounded-lg border px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.14em] ${heatSeverityBadge.className}`}
+                        >
+                          {heatSeverityBadge.label}
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="mt-2 text-sm text-stone-600">
+                      Heat / hot water 311 · last 12 months
                     </p>
                   </div>
                 </div>
-                <div className="hidden h-16 w-px bg-stone-200 sm:block" aria-hidden />
-                <p className="text-center text-sm leading-relaxed text-stone-600 sm:max-w-sm sm:text-left">
-                  Green 0–2 · Yellow 3–5 · Red 6+ — same address + ZIP you searched. Higher DOB
-                  complaint counts mean more city attention on the building.
-                </p>
+              </div>
+
+              <div className={summaryBoxClass}>
+                <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-end">
+                  <span className="text-5xl leading-none md:text-6xl" aria-hidden>
+                    🐀
+                  </span>
+                  <div className="min-w-0 flex-1 text-center sm:text-left">
+                    <h3 className="text-xs font-semibold uppercase tracking-[0.28em] text-[#3D362F]">
+                      Pests
+                    </h3>
+                    <p className="mt-3 font-serif text-5xl font-light tabular-nums leading-none md:text-6xl">
+                      {activeRatSignInspections.length}
+                    </p>
+                    <p className="mt-2 text-sm text-stone-600">
+                      Active rat signs · DOHMH · 5 years
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className={summaryBoxClass}>
+                <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start">
+                  <span className="text-5xl leading-none md:text-6xl" aria-hidden>
+                    ⚖️
+                  </span>
+                  <div className="min-w-0 flex-1 space-y-4 text-center sm:text-left">
+                    <h3 className="text-xs font-semibold uppercase tracking-[0.28em] text-[#3D362F]">
+                      Legal
+                    </h3>
+                    <div>
+                      <p className="font-serif text-4xl font-light tabular-nums md:text-5xl">
+                        {hpdViolations.length}
+                      </p>
+                      <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-500">
+                        HPD violations
+                      </p>
+                    </div>
+                    <div className="border-t border-stone-200/80 pt-3">
+                      <p className="font-serif text-3xl font-light tabular-nums md:text-4xl">
+                        {complaintCount}
+                      </p>
+                      <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-500">
+                        DOB complaints (safety score)
+                      </p>
+                    </div>
+                    <div className="border-t border-stone-200/80 pt-3">
+                      <p className="font-serif text-3xl font-light tabular-nums md:text-4xl">
+                        {tenant311Count ?? 0}
+                      </p>
+                      <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-500">
+                        Tenant 311 → HPD · 5 years
+                      </p>
+                    </div>
+                    {hpdViolations.length === 0 && (tenant311Count ?? 0) > 0 ? (
+                      <p className="rounded-lg border border-amber-200/70 bg-amber-50/60 px-3 py-2 text-xs leading-snug text-stone-800">
+                        Tenant reports; pending inspection.
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
               </div>
             </div>
+
+            <div className="flex justify-center pt-1">
+              <button
+                type="button"
+                onClick={() => setShowAllDetails((current) => !current)}
+                aria-expanded={showAllDetails}
+                className="rounded-xl border border-stone-200 bg-white px-6 py-3 text-xs font-semibold uppercase tracking-[0.2em] text-[#3D362F] shadow-sm transition hover:bg-stone-50"
+              >
+                {showAllDetails ? "Hide all details" : "Show all details"}
+              </button>
+            </div>
+
+            {showAllDetails ? (
+              <div className="space-y-8">
+                <div className="rounded-2xl border border-stone-100/90 bg-white p-6 text-sm leading-relaxed text-stone-600 shadow-md md:p-8">
+                  <p>
+                    <span className="font-semibold text-[#1A1A1A]">Safety score</span> uses DOB
+                    complaints at this address + ZIP (Green 0–2 · Yellow 3–5 · Red 6+). Higher counts
+                    mean more city attention on the building.
+                  </p>
+                </div>
 
             {/* Winter Essentials */}
             <div className={categoryCardClass}>
@@ -876,6 +971,8 @@ export default function Home() {
                 </div>
               </div>
             </div>
+              </div>
+            ) : null}
           </section>
         ) : null}
       </main>
