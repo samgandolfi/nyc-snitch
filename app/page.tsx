@@ -500,12 +500,15 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-[#FDFCFB] text-[#1A1A1A]">
-      <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-6 md:gap-6 md:px-10 md:py-8">
+    <div className="flex min-h-screen flex-col bg-[#FDFCFB] text-[#1A1A1A]">
+      <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-6 px-6 py-6 pb-20 md:gap-6 md:px-10 md:py-8 md:pb-20">
         <section className="border border-stone-300 bg-white px-5 py-5 md:px-6 md:py-6">
           <h1 className="font-sans text-2xl font-bold uppercase tracking-[0.12em] text-[#1A1A1A] md:text-3xl">
             NYC SNITCH
           </h1>
+          <p className="mt-2 max-w-xl text-sm font-normal leading-relaxed tracking-wide text-stone-500 md:mt-2.5 md:text-[15px]">
+            NYC&apos;s most transparent building background check.
+          </p>
 
           <form
             className="mt-4 grid border border-stone-300 bg-white p-3 md:mt-5 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)_auto] md:p-4"
@@ -976,9 +979,9 @@ export default function Home() {
           </section>
         ) : null}
       </main>
-      <footer className="border-t border-stone-200 bg-[#FDFCFB]">
-        <div className="mx-auto max-w-5xl px-8 py-6 md:px-12">
-          <p className="text-xs leading-relaxed text-stone-500">
+      <footer className="mt-auto border-t border-stone-200/80 bg-[#FDFCFB]">
+        <div className="mx-auto max-w-5xl px-6 py-5 md:px-10 md:py-6">
+          <p className="text-[10px] leading-relaxed text-gray-400">
             Data for this tool is sourced from NYC Open Data and is provided for informational
             purposes only. While reasonable efforts are made to reflect the underlying dataset,
             no guarantee is made as to completeness, accuracy, or timeliness, and the creators
