@@ -4,7 +4,17 @@ import { FormEvent, useMemo, useState } from "react";
 
 type SafetyLevel = "Green" | "Yellow" | "Red";
 
-/** DOB complaint count only; violation details come from HPD (wvxf-dwi5). */
+/** DOB Complaints (vztk-gaf7) — same address match as safety-score count. */
+type DobComplaintRow = {
+  complaint_number?: string;
+  status?: string;
+  complaint_category?: string;
+  date_entered?: string;
+  inspection_date?: string;
+  disposition_code?: string;
+  unit?: string;
+};
+
 type HpdViolationRow = {
   violationid?: string;
   housenumber?: string;
@@ -48,6 +58,8 @@ const THREE_ONE_ONE_RESOURCE =
   "https://data.cityofnewyork.us/resource/erm2-nwe9.json";
 const HPD_VIOLATIONS_RESOURCE =
   "https://data.cityofnewyork.us/resource/wvxf-dwi5.json";
+const DOB_COMPLAINTS_RESOURCE =
+  "https://data.cityofnewyork.us/resource/vztk-gaf7.json";
 
 function getSafetyLevel(complaintCount: number): SafetyLevel {
   if (complaintCount <= 2) return "Green";
@@ -217,6 +229,7 @@ export default function Home() {
   const [showArchive, setShowArchive] = useState(false);
   const [showAllDetails, setShowAllDetails] = useState(false);
   const [complaintCount, setComplaintCount] = useState<number | null>(null);
+  const [dobComplaints, setDobComplaints] = useState<DobComplaintRow[]>([]);
   const [hpdViolations, setHpdViolations] = useState<HpdViolationRow[]>([]);
   const [activeRatSignInspections, setActiveRatSignInspections] = useState<
     RodentInspectionRow[]
@@ -282,6 +295,7 @@ export default function Home() {
     event.preventDefault();
     setError("");
     setComplaintCount(null);
+    setDobComplaints([]);
     setHpdViolations([]);
     setActiveRatSignInspections([]);
     setHeatHotWater311Last12Months(null);
@@ -316,6 +330,13 @@ export default function Home() {
     const countParams = new URLSearchParams({
       $select: "count(*) as complaint_count",
       $where: whereClause,
+    });
+    const dobListParams = new URLSearchParams({
+      $select:
+        "complaint_number,status,complaint_category,date_entered,inspection_date,disposition_code,unit",
+      $where: whereClause,
+      $order: "date_entered DESC",
+      $limit: "500",
     });
 
     const hpdStreetClause = sqlUpperStreetIn("streetname", streetVariants);
@@ -453,15 +474,16 @@ export default function Home() {
         return { count, rows };
       });
 
-      const [countResponse, hpdRows, rodentRows, heat311Result, tenant311Result] =
+      const [countResponse, dobListResponse, hpdRows, rodentRows, heat311Result, tenant311Result] =
         await Promise.all([
-          fetch(
-            `https://data.cityofnewyork.us/resource/vztk-gaf7.json?${countParams.toString()}`,
-            {
-              headers,
-              cache: "no-store",
-            },
-          ),
+          fetch(`${DOB_COMPLAINTS_RESOURCE}?${countParams.toString()}`, {
+            headers,
+            cache: "no-store",
+          }),
+          fetch(`${DOB_COMPLAINTS_RESOURCE}?${dobListParams.toString()}`, {
+            headers,
+            cache: "no-store",
+          }),
           hpdFetch.catch(() => [] as HpdViolationRow[]),
           rodentFetch.catch(() => [] as RodentInspectionRow[]),
           heat311Fetch.catch(() => ({ count: 0, rows: [] as Heat311Row[] })),
@@ -480,6 +502,14 @@ export default function Home() {
       }
 
       setComplaintCount(count);
+
+      let dobRows: DobComplaintRow[] = [];
+      if (dobListResponse.ok) {
+        const raw = (await dobListResponse.json()) as DobComplaintRow[];
+        dobRows = Array.isArray(raw) ? raw : [];
+      }
+      setDobComplaints(dobRows);
+
       setHpdViolations(hpdRows);
       setActiveRatSignInspections(rodentRows);
       setHeatHotWater311Last12Months(heat311Result.count);
@@ -488,6 +518,7 @@ export default function Home() {
       setTenant311Rows(tenant311Result.rows);
     } catch {
       setError("Could not fetch complaints right now. Please try again.");
+      setDobComplaints([]);
       setActiveRatSignInspections([]);
       setHeatHotWater311Last12Months(null);
       setHeat311Rows([]);
@@ -845,6 +876,99 @@ export default function Home() {
                         })
                       ) : (
                         <li className="text-sm text-stone-600">No HPD violations for this address.</li>
+                      )}
+                    </ul>
+                  </div>
+
+                  <div className="mt-12 border-t border-stone-200/80 pt-10">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
+                      Structural &amp; elevator issues (DOB)
+                    </p>
+                    <p className="mt-2 text-sm leading-relaxed text-stone-600">
+                      Department of Buildings complaints at this address (same house, ZIP, and street
+                      match as the safety score). Category codes are DOB&apos;s official complaint
+                      types (e.g. structural, elevator, construction).
+                    </p>
+                    {dobComplaints.length > 0 &&
+                    complaintCount !== null &&
+                    dobComplaints.length < complaintCount ? (
+                      <p className="mt-3 text-xs text-stone-500">
+                        Showing {dobComplaints.length} most recent (API limit); total count is{" "}
+                        {complaintCount}.
+                      </p>
+                    ) : null}
+                    <ul className="mt-6 max-h-96 space-y-4 overflow-y-auto">
+                      {dobComplaints.length > 0 ? (
+                        dobComplaints.map((row, index) => {
+                          const cat = (row.complaint_category ?? "").trim();
+                          const st = (row.status ?? "").trim();
+                          const num = (row.complaint_number ?? "").trim();
+                          return (
+                            <li
+                              key={num ? `${num}-${index}` : `dob-${index}`}
+                              className="flex gap-4 rounded-xl border border-stone-100 bg-white p-5 shadow-sm"
+                            >
+                              <span className="text-3xl leading-none md:text-4xl" aria-hidden>
+                                🏗️
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-base font-medium text-[#1A1A1A]">
+                                  {cat ? (
+                                    <>
+                                      Category{" "}
+                                      <span className="tabular-nums">{cat}</span>
+                                    </>
+                                  ) : (
+                                    "Category not listed"
+                                  )}
+                                </p>
+                                <p className="mt-2 text-sm font-medium text-stone-700">
+                                  Status: {st || "—"}
+                                </p>
+                                <p className="mt-2 text-sm text-stone-500">
+                                  Entered {formatEnteredDate(row.date_entered)}
+                                  {num ? ` · Complaint #${num}` : ""}
+                                </p>
+                                {(row.inspection_date?.trim() ||
+                                  row.disposition_code?.trim() ||
+                                  row.unit?.trim()) ? (
+                                  <details className="mt-3">
+                                    <summary className="cursor-pointer text-sm font-medium text-[#3D362F] underline decoration-stone-300 underline-offset-2 hover:decoration-[#C9A66B]">
+                                      See details
+                                    </summary>
+                                    <div className="mt-3 space-y-2 text-sm text-stone-600">
+                                      {row.inspection_date?.trim() ? (
+                                        <p>
+                                          <span className="text-stone-500">Inspection: </span>
+                                          {formatEnteredDate(row.inspection_date)}
+                                        </p>
+                                      ) : null}
+                                      {row.disposition_code?.trim() ? (
+                                        <p>
+                                          <span className="text-stone-500">Disposition code: </span>
+                                          {row.disposition_code.trim()}
+                                        </p>
+                                      ) : null}
+                                      {row.unit?.trim() ? (
+                                        <p>
+                                          <span className="text-stone-500">Unit: </span>
+                                          {row.unit.trim()}
+                                        </p>
+                                      ) : null}
+                                    </div>
+                                  </details>
+                                ) : null}
+                              </div>
+                            </li>
+                          );
+                        })
+                      ) : (complaintCount ?? 0) > 0 ? (
+                        <li className="text-sm text-stone-600">
+                          Couldn&apos;t load DOB complaint rows; the count above still reflects Open
+                          Data.
+                        </li>
+                      ) : (
+                        <li className="text-sm text-stone-600">No DOB complaints on file for this address.</li>
                       )}
                     </ul>
                   </div>
