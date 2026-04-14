@@ -18,12 +18,25 @@ type DobComplaintRow = {
 
 type HpdViolationRow = {
   violationid?: string;
+  registrationid?: string | number;
   housenumber?: string;
   streetname?: string;
   class?: string;
   novdescription?: string;
   currentstatus?: string;
   inspectiondate?: string;
+};
+
+/** HPD Registration Contacts (feu5-w2e2), joined via `registrationid` on violations. */
+type HpdRegistrationContactRow = {
+  registrationid?: string | number;
+  type?: string;
+  corporationname?: string;
+  firstname?: string;
+  middleinitial?: string;
+  lastname?: string;
+  contactdescription?: string;
+  title?: string;
 };
 
 type Heat311Row = {
@@ -61,6 +74,65 @@ const HPD_VIOLATIONS_RESOURCE =
   "https://data.cityofnewyork.us/resource/wvxf-dwi5.json";
 const DOB_COMPLAINTS_RESOURCE =
   "https://data.cityofnewyork.us/resource/vztk-gaf7.json";
+const HPD_REGISTRATION_CONTACTS_RESOURCE =
+  "https://data.cityofnewyork.us/resource/feu5-w2e2.json";
+
+type ResultsTabId = "overview" | "history" | "owner";
+
+function isHpdViolationOpen(status?: string): boolean {
+  const s = (status ?? "").trim().toLowerCase();
+  if (!s) return false;
+  if (/\bopen\b|\bpending\b|\bactive\b|\bnot\s+certified\b|\bfail\b/.test(s)) return true;
+  if (
+    /\bclosed\b|\bcertified\b|\bresolved\b|\bcured\b|\bdismiss|\bviolation\s+closed\b/.test(s)
+  ) {
+    return false;
+  }
+  return !/\bclose|\bcertif|\bresolve|\bdismiss|\bcure\b/.test(s);
+}
+
+function formatHpdContactDisplayName(row: HpdRegistrationContactRow): string {
+  const corp = row.corporationname?.trim();
+  if (corp) return corp;
+  const parts = [row.firstname, row.middleinitial, row.lastname]
+    .map((p) => (p == null ? "" : String(p).trim()))
+    .filter(Boolean)
+    .join(" ");
+  if (parts) return parts;
+  const cd = row.contactdescription?.trim();
+  if (cd && cd !== "." && !/^gen\.?\s*part$/i.test(cd)) return cd;
+  return "";
+}
+
+function pickOwnerDisplay(contacts: HpdRegistrationContactRow[]): string | null {
+  const ownerTypes = new Set(["CorporateOwner", "IndividualOwner", "JointOwner"]);
+  for (const row of contacts) {
+    if (!ownerTypes.has(row.type ?? "")) continue;
+    const name = formatHpdContactDisplayName(row);
+    if (name) return name;
+  }
+  return null;
+}
+
+function pickManagingAgentDisplay(contacts: HpdRegistrationContactRow[]): string | null {
+  for (const row of contacts) {
+    if (row.type !== "SiteManager") continue;
+    const name = formatHpdContactDisplayName(row);
+    if (name) return name;
+  }
+  for (const row of contacts) {
+    if (row.type !== "Agent") continue;
+    const fn = row.firstname?.trim();
+    const ln = row.lastname?.trim();
+    if (fn || ln) return [fn, ln].filter(Boolean).join(" ");
+  }
+  for (const row of contacts) {
+    if (row.type !== "Agent") continue;
+    const name = formatHpdContactDisplayName(row);
+    if (name) return name;
+  }
+  return null;
+}
 
 /** Buckets apply to DOB complaint count in the trailing 24 months only. */
 function getSafetyLevel(complaintCount: number): SafetyLevel {
@@ -275,7 +347,7 @@ export default function Home() {
   const [zipCode, setZipCode] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
-  const [showAllDetails, setShowAllDetails] = useState(false);
+  const [resultsTab, setResultsTab] = useState<ResultsTabId>("overview");
   /** DOB complaints in the last 24 months — drives safety score + Legal summary DOB number. */
   const [complaintCount, setComplaintCount] = useState<number | null>(null);
   /** All-time DOB complaint count at this address (for list vs. total messaging). */
@@ -291,6 +363,9 @@ export default function Home() {
   const [heat311Rows, setHeat311Rows] = useState<Heat311Row[]>([]);
   const [tenant311Rows, setTenant311Rows] = useState<Tenant311Row[]>([]);
   const [tenant311Count, setTenant311Count] = useState<number | null>(null);
+  const [hpdRegistrationContacts, setHpdRegistrationContacts] = useState<HpdRegistrationContactRow[]>(
+    [],
+  );
   const [error, setError] = useState("");
 
   const safetyLevel = useMemo(() => {
@@ -356,6 +431,66 @@ export default function Home() {
     [heatHotWater311Last12Months],
   );
 
+  const openHpdViolationsCount = useMemo(
+    () => hpdViolations.filter((row) => isHpdViolationOpen(row.currentstatus)).length,
+    [hpdViolations],
+  );
+
+  const ownerDisplayName = useMemo(
+    () => pickOwnerDisplay(hpdRegistrationContacts),
+    [hpdRegistrationContacts],
+  );
+
+  const managingAgentDisplayName = useMemo(
+    () => pickManagingAgentDisplay(hpdRegistrationContacts),
+    [hpdRegistrationContacts],
+  );
+
+  const overviewRecentActivity = useMemo(() => {
+    type Item = { id: string; t: number; text: string; tag: string; dateLabel: string };
+    const items: Item[] = [];
+    for (const r of dobComplaints.slice(0, 12)) {
+      const d = parseDateForSort(r.date_entered);
+      const t = d?.getTime() ?? 0;
+      const cat = (r.complaint_category ?? "").trim();
+      items.push({
+        id: `dob-${r.complaint_number ?? r.date_entered}-${t}`,
+        t,
+        text: getDobComplaintCategoryLabel(cat),
+        tag: "DOB",
+        dateLabel: formatEnteredDate(r.date_entered),
+      });
+    }
+    for (const r of visibleHpdViolations.slice(0, 12)) {
+      const d = parseDateForSort(r.inspectiondate);
+      const t = d?.getTime() ?? 0;
+      const klass =
+        r.class != null && String(r.class).trim() !== ""
+          ? `Class ${String(r.class).trim()} violation`
+          : "HPD violation";
+      items.push({
+        id: `hpd-${r.violationid ?? r.inspectiondate}-${t}`,
+        t,
+        text: klass,
+        tag: "HPD",
+        dateLabel: formatEnteredDate(r.inspectiondate),
+      });
+    }
+    for (const r of sortedTenant311Rows.slice(0, 12)) {
+      const d = parseDateForSort(r.created_date);
+      const t = d?.getTime() ?? 0;
+      items.push({
+        id: `311-${r.unique_key ?? r.created_date}-${t}`,
+        t,
+        text: r.complaint_type?.trim() || "Tenant 311 (HPD)",
+        tag: "311",
+        dateLabel: formatEnteredDate(r.created_date),
+      });
+    }
+    items.sort((a, b) => b.t - a.t);
+    return items.slice(0, 6);
+  }, [dobComplaints, visibleHpdViolations, sortedTenant311Rows]);
+
   async function checkBuilding(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
@@ -369,7 +504,8 @@ export default function Home() {
     setTenant311Rows([]);
     setTenant311Count(null);
     setShowArchive(false);
-    setShowAllDetails(false);
+    setResultsTab("overview");
+    setHpdRegistrationContacts([]);
 
     const trimmedHouseNumber = houseNumber.trim().replace(/\s+/g, " ");
     const trimmedStreetName = streetName.trim().toUpperCase();
@@ -424,7 +560,7 @@ export default function Home() {
     const hpdWhere = `housenumber='${escapedHouseNumber}' AND zip='${escapedZip}' AND ${hpdStreetClause}`;
     const hpdParams = new URLSearchParams({
       $select:
-        "violationid,housenumber,streetname,class,novdescription,currentstatus,inspectiondate",
+        "violationid,registrationid,housenumber,streetname,class,novdescription,currentstatus,inspectiondate",
       $where: hpdWhere,
       $order: "inspectiondate DESC",
       $limit: "25",
@@ -605,6 +741,38 @@ export default function Home() {
       setDobComplaints(dobRows);
 
       setHpdViolations(hpdRows);
+
+      const regIdNums = [
+        ...new Set(
+          hpdRows
+            .map((r) => r.registrationid)
+            .filter((id) => id != null && String(id).trim() !== "" && String(id) !== "0"),
+        ),
+      ]
+        .slice(0, 8)
+        .map((id) => Number(String(id).trim()))
+        .filter((n) => Number.isFinite(n) && n > 0);
+
+      let regContacts: HpdRegistrationContactRow[] = [];
+      if (regIdNums.length > 0) {
+        const regWhere = `registrationid in (${regIdNums.join(",")})`;
+        const regParams = new URLSearchParams({
+          $select:
+            "registrationid,type,corporationname,firstname,middleinitial,lastname,contactdescription,title",
+          $where: regWhere,
+          $limit: "200",
+        });
+        const regRes = await fetch(
+          `${HPD_REGISTRATION_CONTACTS_RESOURCE}?${regParams.toString()}`,
+          { headers, cache: "no-store" },
+        );
+        if (regRes.ok) {
+          const rawC = (await regRes.json()) as HpdRegistrationContactRow[];
+          regContacts = Array.isArray(rawC) ? rawC : [];
+        }
+      }
+      setHpdRegistrationContacts(regContacts);
+
       setActiveRatSignInspections(rodentRows);
       setHeatHotWater311Last12Months(heat311Result.count);
       setHeat311Rows(heat311Result.rows);
@@ -615,6 +783,7 @@ export default function Home() {
       setComplaintCount(null);
       setDobComplaintsTotalOnFile(null);
       setDobComplaints([]);
+      setHpdRegistrationContacts([]);
       setActiveRatSignInspections([]);
       setHeatHotWater311Last12Months(null);
       setHeat311Rows([]);
@@ -677,32 +846,63 @@ export default function Home() {
         </section>
 
         {complaintCount !== null && safetyLevel ? (
-          <section className="space-y-8 pb-6">
-            {/* Address + safety score only */}
-            <div className="flex flex-col items-center justify-center gap-5 px-2 text-center md:flex-row md:flex-wrap md:gap-6">
-              <h2 className="max-w-4xl font-serif text-4xl font-light leading-tight tracking-wide text-[#1A1A1A] sm:text-5xl md:text-6xl lg:text-7xl">
-                {houseNumber.trim()} {streetName.trim().toUpperCase()}{" "}
-                <span className="text-stone-500">
-                  {zipCode.replace(/\D/g, "").slice(0, 5)}
-                </span>
-              </h2>
-              <div
-                className={`inline-flex shrink-0 flex-col items-center gap-1 rounded-2xl px-5 py-3 shadow-md ${safetyScoreBadgeClass}`}
-              >
-                <span className="text-[10px] font-semibold uppercase tracking-[0.22em] opacity-80">
-                  Safety score
-                </span>
-                <span className="font-serif text-2xl font-light md:text-3xl">{safetyLevel}</span>
-                <span className="max-w-[14rem] text-center text-xs leading-snug opacity-90">
-                  {getSafetyLabel(safetyLevel)}
-                </span>
-                <span className="mt-1 max-w-[15rem] text-center text-[10px] leading-snug text-stone-500">
-                  Based on activity from the last 24 months
-                </span>
+          <section className="pb-8">
+            <div className="sticky top-0 z-30 -mx-6 border-b border-stone-200/90 bg-[#FDFCFB]/95 px-6 py-4 shadow-sm backdrop-blur-sm md:-mx-10">
+              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between md:gap-6">
+                <h2 className="max-w-3xl font-serif text-2xl font-light leading-tight tracking-wide text-[#1A1A1A] sm:text-3xl md:text-4xl">
+                  {houseNumber.trim()} {streetName.trim().toUpperCase()}{" "}
+                  <span className="text-stone-500">
+                    {zipCode.replace(/\D/g, "").slice(0, 5)}
+                  </span>
+                </h2>
+                <div
+                  className={`inline-flex shrink-0 flex-col items-start gap-1 rounded-2xl px-5 py-3 shadow-md md:items-end ${safetyScoreBadgeClass}`}
+                >
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.22em] opacity-80">
+                    Safety score
+                  </span>
+                  <span className="font-serif text-2xl font-light md:text-3xl">{safetyLevel}</span>
+                  <span className="max-w-[14rem] text-left text-xs leading-snug opacity-90 md:text-right">
+                    {getSafetyLabel(safetyLevel)}
+                  </span>
+                  <span className="mt-1 max-w-[15rem] text-left text-[10px] leading-snug text-stone-500 md:text-right">
+                    Based on activity from the last 24 months
+                  </span>
+                </div>
               </div>
+              <nav
+                className="mt-4 flex flex-wrap gap-6 border-t border-stone-200/80 pt-3 md:gap-10"
+                aria-label="Building sections"
+              >
+                {(
+                  [
+                    ["overview", "Overview"],
+                    ["history", "History"],
+                    ["owner", "Owner Profile"],
+                  ] as const
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="tab"
+                    aria-selected={resultsTab === id}
+                    onClick={() => setResultsTab(id)}
+                    className={`border-b-2 pb-2.5 text-[11px] font-semibold uppercase tracking-[0.2em] transition-colors ${
+                      resultsTab === id
+                        ? "border-[#1A1A1A] text-[#1A1A1A]"
+                        : "border-transparent text-stone-500 hover:text-[#1A1A1A]"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </nav>
             </div>
 
-            <div className="grid gap-5 md:grid-cols-3 md:gap-6">
+            <div className="mt-6 space-y-8">
+              {resultsTab === "overview" && (
+                <>
+                  <div className="grid gap-5 md:grid-cols-3 md:gap-6">
               <div className={summaryBoxClass}>
                 <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-end">
                   <span className="text-5xl leading-none md:text-6xl" aria-hidden>
