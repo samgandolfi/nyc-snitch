@@ -993,19 +993,55 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="flex justify-center pt-1">
-              <button
-                type="button"
-                onClick={() => setShowAllDetails((current) => !current)}
-                aria-expanded={showAllDetails}
-                className="rounded-xl border border-stone-200 bg-white px-6 py-3 text-xs font-semibold uppercase tracking-[0.2em] text-[#3D362F] shadow-sm transition hover:bg-stone-50"
-              >
-                {showAllDetails ? "Hide all details" : "Show all details"}
-              </button>
-            </div>
+                  <div className="rounded-2xl border border-stone-100/90 bg-white p-6 shadow-md md:p-8">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
+                      Total open HPD violations
+                    </p>
+                    <p className="mt-2 font-serif text-4xl font-light tabular-nums text-[#1A1A1A] md:text-5xl">
+                      {openHpdViolationsCount}
+                    </p>
+                    <p className="mt-2 text-xs text-stone-500">
+                      Violations whose status still looks active (not certified closed or dismissed).
+                    </p>
+                  </div>
 
-            {showAllDetails ? (
-              <div className="space-y-8">
+                  <div className="rounded-2xl border border-stone-100/90 bg-white p-6 shadow-md md:p-8">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
+                      Most recent activity
+                    </p>
+                    {overviewRecentActivity.length > 0 ? (
+                      <ul className="mt-4 space-y-3">
+                        {overviewRecentActivity.map((item) => (
+                          <li key={item.id} className="flex gap-3 text-sm leading-snug text-stone-700">
+                            <span className="shrink-0 tabular-nums text-stone-400">{item.dateLabel}</span>
+                            <span className="min-w-0">
+                              <span className="font-medium text-[#1A1A1A]">[{item.tag}]</span>{" "}
+                              {item.text}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-4 text-sm text-stone-500">
+                        No recent DOB, HPD, or tenant 311 rows in this snapshot.
+                      </p>
+                    )}
+                    <p className="mt-6 text-center text-xs text-stone-500">
+                      <button
+                        type="button"
+                        onClick={() => setResultsTab("history")}
+                        className="font-semibold text-[#1A1A1A] underline decoration-stone-300 underline-offset-2 hover:decoration-rose-400"
+                      >
+                        Open History
+                      </button>{" "}
+                      for full chronological lists.
+                    </p>
+                  </div>
+                </>
+              )}
+
+              {resultsTab === "history" && (
+                <div className="space-y-8">
                 <div className="rounded-2xl border border-stone-100/90 bg-white p-6 text-sm leading-relaxed text-stone-600 shadow-md md:p-8">
                   <p>
                     <span className="font-semibold text-[#1A1A1A]">Safety score</span> counts DOB
@@ -1423,7 +1459,49 @@ export default function Home() {
               </div>
             </div>
               </div>
-            ) : null}
+              )}
+
+              {resultsTab === "owner" && (
+                <div className={categoryCardClass}>
+                  <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:gap-8">
+                    <span className="shrink-0 text-5xl leading-none sm:text-6xl" aria-hidden>
+                      👤
+                    </span>
+                    <div className="min-w-0 flex-1 space-y-6">
+                      <h3 className="text-xs font-semibold uppercase tracking-[0.28em] text-[#3D362F]">
+                        Owner profile
+                      </h3>
+                      <p className="text-sm leading-relaxed text-stone-600">
+                        From HPD registration contacts matched to violations at this address.
+                      </p>
+                      <div>
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
+                          Owner
+                        </p>
+                        <p className="mt-2 text-lg font-medium text-[#1A1A1A]">
+                          {ownerDisplayName ?? "Not listed in registration data"}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
+                          Registered managing agent
+                        </p>
+                        <p className="mt-2 text-lg font-medium text-[#1A1A1A]">
+                          {managingAgentDisplayName ?? "Not listed in registration data"}
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-stone-200 bg-stone-50/80 p-5">
+                        <p className="text-sm font-medium text-stone-700">Analyzing portfolio…</p>
+                        <p className="mt-2 text-xs leading-relaxed text-stone-500">
+                          Stats for other buildings tied to this owner or agent will appear here soon.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+            </div>
           </section>
         ) : null}
       </main>
