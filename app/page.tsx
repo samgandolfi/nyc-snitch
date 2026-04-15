@@ -27,7 +27,7 @@ type HpdViolationRow = {
   inspectiondate?: string;
 };
 
-/** HPD Registration Contacts (feu5-w2e2), joined via `registrationid` on violations. */
+/** HPD Registration Contacts (feu5-w2e2), joined via `registrationid` on violations or MDR. */
 type HpdRegistrationContactRow = {
   registrationid?: string | number;
   type?: string;
@@ -37,6 +37,16 @@ type HpdRegistrationContactRow = {
   lastname?: string;
   contactdescription?: string;
   title?: string;
+  businesshousenumber?: string;
+  businessstreetname?: string;
+  businessapartment?: string;
+  businesscity?: string;
+  businessstate?: string;
+  businesszip?: string;
+  /** Not in current Open Data schema; kept for forward compatibility / optional columns. */
+  businessphone?: string;
+  phone?: string;
+  registrationcontactid?: string | number;
 };
 
 type Heat311Row = {
@@ -76,6 +86,9 @@ const DOB_COMPLAINTS_RESOURCE =
   "https://data.cityofnewyork.us/resource/vztk-gaf7.json";
 const HPD_REGISTRATION_CONTACTS_RESOURCE =
   "https://data.cityofnewyork.us/resource/feu5-w2e2.json";
+/** Multiple Dwelling Registrations (tesw-yqqr) — resolve `registrationid` by address when violations are empty. */
+const HPD_MULTIPLE_DWELLING_REGISTRATIONS_RESOURCE =
+  "https://data.cityofnewyork.us/resource/tesw-yqqr.json";
 
 type ResultsTabId = "overview" | "history" | "rent" | "owner";
 
@@ -124,45 +137,584 @@ function isHpdViolationOpen(status?: string): boolean {
   return !/\bclose|\bcertif|\bresolve|\bdismiss|\bcure\b/.test(s);
 }
 
-function formatHpdContactDisplayName(row: HpdRegistrationContactRow): string {
-  const corp = row.corporationname?.trim();
-  if (corp) return corp;
-  const parts = [row.firstname, row.middleinitial, row.lastname]
-    .map((p) => (p == null ? "" : String(p).trim()))
-    .filter(Boolean)
-    .join(" ");
-  if (parts) return parts;
-  const cd = row.contactdescription?.trim();
-  if (cd && cd !== "." && !/^gen\.?\s*part$/i.test(cd)) return cd;
-  return "";
+function registrationContactRowScore(row: HpdRegistrationContactRow): number {
+  let s = 0;
+  if (row.corporationname?.trim()) s += 4;
+  if (row.firstname?.trim() || row.lastname?.trim()) s += 2;
+  if (row.businessstreetname?.trim()) s += 1;
+  return s;
 }
 
-function pickOwnerDisplay(contacts: HpdRegistrationContactRow[]): string | null {
-  const ownerTypes = new Set(["CorporateOwner", "IndividualOwner", "JointOwner"]);
-  for (const row of contacts) {
-    if (!ownerTypes.has(row.type ?? "")) continue;
-    const name = formatHpdContactDisplayName(row);
-    if (name) return name;
+function pickBestRegistrationContactRow(
+  rows: HpdRegistrationContactRow[],
+): HpdRegistrationContactRow | null {
+  if (!rows.length) return null;
+  return rows.reduce((best, cur) =>
+    registrationContactRowScore(cur) > registrationContactRowScore(best) ? cur : best,
+  );
+}
+
+/** Registered owner rows: CorporateOwner, IndividualOwner, JointOwner. */
+function pickOwnerContactRow(contacts: HpdRegistrationContactRow[]): HpdRegistrationContactRow | null {
+  const order = ["CorporateOwner", "IndividualOwner", "JointOwner"] as const;
+  for (const t of order) {
+    const rows = contacts.filter((c) => c.type === t);
+    const best = pickBestRegistrationContactRow(rows);
+    if (best) return best;
   }
   return null;
 }
 
-function pickManagingAgentDisplay(contacts: HpdRegistrationContactRow[]): string | null {
-  for (const row of contacts) {
-    if (row.type !== "SiteManager") continue;
-    const name = formatHpdContactDisplayName(row);
-    if (name) return name;
+/** Registered managing agent: HPD uses `Agent`; `SiteManager` is a fallback. */
+function pickManagingAgentContactRow(
+  contacts: HpdRegistrationContactRow[],
+): HpdRegistrationContactRow | null {
+  const agents = contacts.filter((c) => c.type === "Agent");
+  const fromAgents = pickBestRegistrationContactRow(agents);
+  if (fromAgents) return fromAgents;
+  const site = contacts.filter((c) => c.type === "SiteManager");
+  return pickBestRegistrationContactRow(site);
+}
+
+function pickHeadOfficerContactRow(
+  contacts: HpdRegistrationContactRow[],
+): HpdRegistrationContactRow | null {
+  const rows = contacts.filter((c) => c.type === "HeadOfficer");
+  return pickBestRegistrationContactRow(rows);
+}
+
+function normalizeRegistrationTitleKey(title?: string): "head_officer" | "managing_agent" | null {
+  const t = (title ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[,.\s]+$/g, "")
+    .trim();
+  if (t === "head officer") return "head_officer";
+  if (t === "managing agent") return "managing_agent";
+  return null;
+}
+
+function isSameRegistrationContactRow(
+  a: HpdRegistrationContactRow | null,
+  b: HpdRegistrationContactRow | null,
+): boolean {
+  if (!a || !b) return false;
+  const idA = a.registrationcontactid;
+  const idB = b.registrationcontactid;
+  if (idA != null && idB != null && String(idA) === String(idB)) return true;
+  return (
+    String(a.registrationid ?? "") === String(b.registrationid ?? "") &&
+    formatPersonNameParts(a).toUpperCase() === formatPersonNameParts(b).toUpperCase() &&
+    (a.type ?? "") === (b.type ?? "")
+  );
+}
+
+function sqlEscapeSoqlString(value: string): string {
+  return value.replace(/'/g, "''");
+}
+
+/** Prefer head officer for portfolio stats; else managing agent. Requires first + last name. */
+function pickPortfolioNameSource(
+  contacts: HpdRegistrationContactRow[],
+): { row: HpdRegistrationContactRow; role: "head_officer" | "managing_agent" } | null {
+  const ho = pickHeadOfficerContactRow(contacts);
+  if (ho?.firstname?.trim() && ho?.lastname?.trim()) {
+    return { row: ho, role: "head_officer" };
   }
-  for (const row of contacts) {
-    if (row.type !== "Agent") continue;
-    const fn = row.firstname?.trim();
-    const ln = row.lastname?.trim();
-    if (fn || ln) return [fn, ln].filter(Boolean).join(" ");
+  const ma = pickManagingAgentContactRow(contacts);
+  if (ma?.firstname?.trim() && ma?.lastname?.trim()) {
+    return { row: ma, role: "managing_agent" };
   }
-  for (const row of contacts) {
-    if (row.type !== "Agent") continue;
-    const name = formatHpdContactDisplayName(row);
-    if (name) return name;
+  return null;
+}
+
+/**
+ * Names are matched on Registration Contacts (feu5-w2e2); unique `buildingid`s come from Multiple
+ * Dwelling Registrations (tesw-yqqr) via `registrationid`. Returns count minus this search’s
+ * building(s).
+ */
+async function fetchPortfolioOtherBuildingsCount(
+  firstName: string,
+  lastName: string,
+  currentMdrRows: Array<{ buildingid?: string | number }>,
+  headers: HeadersInit,
+): Promise<number> {
+  const fnU = firstName.trim().toUpperCase();
+  const lnU = lastName.trim().toUpperCase();
+  if (!fnU || !lnU) return 0;
+
+  const fnEsc = sqlEscapeSoqlString(fnU);
+  const lnEsc = sqlEscapeSoqlString(lnU);
+  const contactWhere = `upper(trim(firstname))='${fnEsc}' AND upper(trim(lastname))='${lnEsc}'`;
+
+  const regParams = new URLSearchParams({
+    $select: "registrationid",
+    $where: contactWhere,
+    $group: "registrationid",
+    $limit: "50000",
+  });
+
+  const regRes = await fetch(
+    `${HPD_REGISTRATION_CONTACTS_RESOURCE}?${regParams.toString()}`,
+    { headers, cache: "no-store" },
+  );
+  if (!regRes.ok) throw new Error("Portfolio registration lookup failed.");
+  const regRows = (await regRes.json()) as Array<{ registrationid?: string | number }>;
+  const regIds = [
+    ...new Set(
+      regRows
+        .map((r) => r.registrationid)
+        .filter((id) => id != null && String(id).trim() !== "")
+        .map((id) => Number(String(id).trim()))
+        .filter((n) => Number.isFinite(n) && n > 0),
+    ),
+  ];
+
+  const buildingIds = new Set<string>();
+  const chunkSize = 40;
+  for (let i = 0; i < regIds.length; i += chunkSize) {
+    const chunk = regIds.slice(i, i + chunkSize);
+    const where = `registrationid in (${chunk.join(",")})`;
+    const mdrParams = new URLSearchParams({
+      $select: "buildingid",
+      $where: where,
+      $limit: "50000",
+    });
+    const mdrRes = await fetch(
+      `${HPD_MULTIPLE_DWELLING_REGISTRATIONS_RESOURCE}?${mdrParams.toString()}`,
+      { headers, cache: "no-store" },
+    );
+    if (!mdrRes.ok) continue;
+    const mRows = (await mdrRes.json()) as Array<{ buildingid?: string | number }>;
+    for (const row of mRows) {
+      const bid = row.buildingid != null ? String(row.buildingid).trim() : "";
+      if (bid) buildingIds.add(bid);
+    }
+  }
+
+  const currentBuildingIds = new Set(
+    currentMdrRows
+      .map((r) => (r.buildingid != null ? String(r.buildingid).trim() : ""))
+      .filter(Boolean),
+  );
+
+  let overlap = 0;
+  for (const bid of currentBuildingIds) {
+    if (buildingIds.has(bid)) overlap += 1;
+  }
+
+  return Math.max(0, buildingIds.size - overlap);
+}
+
+const ADDRESS_NETWORK_HUB_THRESHOLD = 10;
+
+function hasMinimumBusinessStreetAddress(row: HpdRegistrationContactRow | null): boolean {
+  if (!row) return false;
+  return Boolean(row.businesshousenumber?.trim() && row.businessstreetname?.trim());
+}
+
+/** SoQL filter for the same normalized business address lines on Registration Contacts (feu5-w2e2). */
+function buildBusinessAddressWhereClause(row: HpdRegistrationContactRow): string | null {
+  if (!hasMinimumBusinessStreetAddress(row)) return null;
+  const hn = row.businesshousenumber!.trim().toUpperCase();
+  const sn = row.businessstreetname!.trim().toUpperCase();
+  const parts: string[] = [
+    `upper(trim(businesshousenumber))='${sqlEscapeSoqlString(hn)}'`,
+    `upper(trim(businessstreetname))='${sqlEscapeSoqlString(sn)}'`,
+  ];
+  const apt = row.businessapartment?.trim();
+  if (apt) {
+    parts.push(`upper(trim(businessapartment))='${sqlEscapeSoqlString(apt.toUpperCase())}'`);
+  } else {
+    parts.push(`(businessapartment is null or trim(businessapartment)='')`);
+  }
+  const city = row.businesscity?.trim();
+  if (city) parts.push(`upper(trim(businesscity))='${sqlEscapeSoqlString(city.toUpperCase())}'`);
+  const st = row.businessstate?.trim();
+  if (st) parts.push(`upper(trim(businessstate))='${sqlEscapeSoqlString(st.toUpperCase())}'`);
+  const zipRaw = row.businesszip?.trim();
+  if (zipRaw && !isZipRedacted(zipRaw)) {
+    parts.push(`trim(businesszip)='${sqlEscapeSoqlString(zipRaw)}'`);
+  }
+  return parts.join(" AND ");
+}
+
+/**
+ * "Secret portfolio": contacts sharing the same business address → MDR `buildingid`s (tesw-yqqr),
+ * minus this search’s building(s).
+ */
+async function fetchAddressNetworkOtherBuildingsCount(
+  addressSourceRow: HpdRegistrationContactRow,
+  currentMdrRows: Array<{ buildingid?: string | number }>,
+  headers: HeadersInit,
+): Promise<number> {
+  const contactWhere = buildBusinessAddressWhereClause(addressSourceRow);
+  if (!contactWhere) return 0;
+
+  const regParams = new URLSearchParams({
+    $select: "registrationid",
+    $where: contactWhere,
+    $group: "registrationid",
+    $limit: "50000",
+  });
+
+  const regRes = await fetch(
+    `${HPD_REGISTRATION_CONTACTS_RESOURCE}?${regParams.toString()}`,
+    { headers, cache: "no-store" },
+  );
+  if (!regRes.ok) throw new Error("Address network registration lookup failed.");
+  const regRows = (await regRes.json()) as Array<{ registrationid?: string | number }>;
+  const regIds = [
+    ...new Set(
+      regRows
+        .map((r) => r.registrationid)
+        .filter((id) => id != null && String(id).trim() !== "")
+        .map((id) => Number(String(id).trim()))
+        .filter((n) => Number.isFinite(n) && n > 0),
+    ),
+  ];
+
+  const buildingIds = new Set<string>();
+  const chunkSize = 40;
+  for (let i = 0; i < regIds.length; i += chunkSize) {
+    const chunk = regIds.slice(i, i + chunkSize);
+    const where = `registrationid in (${chunk.join(",")})`;
+    const mdrParams = new URLSearchParams({
+      $select: "buildingid",
+      $where: where,
+      $limit: "50000",
+    });
+    const mdrRes = await fetch(
+      `${HPD_MULTIPLE_DWELLING_REGISTRATIONS_RESOURCE}?${mdrParams.toString()}`,
+      { headers, cache: "no-store" },
+    );
+    if (!mdrRes.ok) continue;
+    const mRows = (await mdrRes.json()) as Array<{ buildingid?: string | number }>;
+    for (const row of mRows) {
+      const bid = row.buildingid != null ? String(row.buildingid).trim() : "";
+      if (bid) buildingIds.add(bid);
+    }
+  }
+
+  const currentBuildingIds = new Set(
+    currentMdrRows
+      .map((r) => (r.buildingid != null ? String(r.buildingid).trim() : ""))
+      .filter(Boolean),
+  );
+
+  let overlap = 0;
+  for (const bid of currentBuildingIds) {
+    if (buildingIds.has(bid)) overlap += 1;
+  }
+
+  return Math.max(0, buildingIds.size - overlap);
+}
+
+/** Head officer / managing agent row with a usable business address (for address-network search). */
+function pickRegistrationRowWithBusinessAddress(
+  contacts: HpdRegistrationContactRow[],
+): HpdRegistrationContactRow | null {
+  const named = pickPortfolioNameSource(contacts);
+  if (named && hasMinimumBusinessStreetAddress(named.row)) return named.row;
+  const ho = pickHeadOfficerContactRow(contacts);
+  if (hasMinimumBusinessStreetAddress(ho)) return ho;
+  const ma = pickManagingAgentContactRow(contacts);
+  if (hasMinimumBusinessStreetAddress(ma)) return ma;
+  return null;
+}
+
+async function fetchGroupedRegistrationIdsForWhere(
+  where: string,
+  headers: HeadersInit,
+): Promise<number[]> {
+  const regParams = new URLSearchParams({
+    $select: "registrationid",
+    $where: where,
+    $group: "registrationid",
+    $limit: "50000",
+  });
+  const regRes = await fetch(
+    `${HPD_REGISTRATION_CONTACTS_RESOURCE}?${regParams.toString()}`,
+    { headers, cache: "no-store" },
+  );
+  if (!regRes.ok) return [];
+  const regRows = (await regRes.json()) as Array<{ registrationid?: string | number }>;
+  return [
+    ...new Set(
+      regRows
+        .map((r) => r.registrationid)
+        .filter((id) => id != null && String(id).trim() !== "")
+        .map((id) => Number(String(id).trim()))
+        .filter((n) => Number.isFinite(n) && n > 0),
+    ),
+  ];
+}
+
+/** Union of registration IDs from portfolio-by-name and portfolio-by-business-address (feu5-w2e2). */
+async function collectPortfolioSearchRegistrationIds(
+  contacts: HpdRegistrationContactRow[],
+  headers: HeadersInit,
+): Promise<number[]> {
+  const union = new Set<number>();
+  const src = pickPortfolioNameSource(contacts);
+  if (src?.row.firstname?.trim() && src.row.lastname?.trim()) {
+    const fnU = src.row.firstname.trim().toUpperCase();
+    const lnU = src.row.lastname.trim().toUpperCase();
+    const where = `upper(trim(firstname))='${sqlEscapeSoqlString(fnU)}' AND upper(trim(lastname))='${sqlEscapeSoqlString(lnU)}'`;
+    for (const id of await fetchGroupedRegistrationIdsForWhere(where, headers)) union.add(id);
+  }
+  const addrRow = pickRegistrationRowWithBusinessAddress(contacts);
+  const addrWhere = addrRow ? buildBusinessAddressWhereClause(addrRow) : null;
+  if (addrWhere) {
+    for (const id of await fetchGroupedRegistrationIdsForWhere(addrWhere, headers)) union.add(id);
+  }
+  return [...union];
+}
+
+async function fetchDistinctBuildingCountForRegistrationIds(
+  regIds: number[],
+  headers: HeadersInit,
+): Promise<number> {
+  const buildingIds = new Set<string>();
+  const chunkSize = 40;
+  const capped = regIds.slice(0, 2000);
+  for (let i = 0; i < capped.length; i += chunkSize) {
+    const chunk = capped.slice(i, i + chunkSize);
+    const where = `registrationid in (${chunk.join(",")})`;
+    const mdrParams = new URLSearchParams({
+      $select: "buildingid",
+      $where: where,
+      $limit: "50000",
+    });
+    const mdrRes = await fetch(
+      `${HPD_MULTIPLE_DWELLING_REGISTRATIONS_RESOURCE}?${mdrParams.toString()}`,
+      { headers, cache: "no-store" },
+    );
+    if (!mdrRes.ok) continue;
+    const mRows = (await mdrRes.json()) as Array<{ buildingid?: string | number }>;
+    for (const row of mRows) {
+      const bid = row.buildingid != null ? String(row.buildingid).trim() : "";
+      if (bid) buildingIds.add(bid);
+    }
+  }
+  return buildingIds.size;
+}
+
+async function fetchViolationsForPortfolioRegistrationIds(
+  regIds: number[],
+  headers: HeadersInit,
+): Promise<Array<{ violationid?: string; novdescription?: string; class?: string }>> {
+  const out: Array<{ violationid?: string; novdescription?: string; class?: string }> = [];
+  const seenViolation = new Set<string>();
+  const chunkSize = 25;
+  const capped = regIds.slice(0, 800);
+  for (let i = 0; i < capped.length; i += chunkSize) {
+    const chunk = capped.slice(i, i + chunkSize);
+    const params = new URLSearchParams({
+      $select: "violationid,novdescription,class",
+      $where: `registrationid in (${chunk.join(",")})`,
+      $limit: "50000",
+    });
+    const res = await fetch(`${HPD_VIOLATIONS_RESOURCE}?${params.toString()}`, {
+      headers,
+      cache: "no-store",
+    });
+    if (!res.ok) continue;
+    const rows = (await res.json()) as Array<{
+      violationid?: string;
+      novdescription?: string;
+      class?: string;
+    }>;
+    if (!Array.isArray(rows)) continue;
+    for (const row of rows) {
+      const vid = String(row.violationid ?? "").trim();
+      if (vid) {
+        if (seenViolation.has(vid)) continue;
+        seenViolation.add(vid);
+      }
+      out.push(row);
+    }
+  }
+  return out;
+}
+
+/** Human-readable bucket for portfolio-wide violation hotspot (NOV text + class). */
+function classifyPortfolioViolationHotspot(nov?: string, klass?: string): string {
+  const u = (nov ?? "").toUpperCase();
+  if (/\bHEAT|HOT\s*WATER|BOILER|RADIATOR|HVAC|STEAM\b/.test(u)) return "Heat/Hot Water";
+  if (/\bMOUSE|MICE|RAT|RODENT|ROACH|PEST|BED\s*BUG|INSECT|VERMIN\b/.test(u)) return "Mice";
+  if (/\bMOLD|DAMP|MILDEW\b/.test(u)) return "Mold";
+  if (/\bELEVATOR|ELEV\b/.test(u)) return "Elevator issues";
+  if (/\bWINDOW\b/.test(u)) return "Windows";
+  if (/\bDOOR|HINGE|SELF-?CLOSING\b/.test(u)) return "Doors";
+  if (/\bPLUMB|LEAK|PIPE|WATER\s*SEEP\b/.test(u)) return "Plumbing";
+  if (/\bELECT|WIRING\b/.test(u)) return "Electrical";
+  if (/\bLEAD|LBP\b/.test(u)) return "Lead paint";
+  if (/\bGARBAGE|TRASH|REFUSE\b/.test(u)) return "Garbage & refuse";
+  if (/\bPAINT|PEEL\b/.test(u)) return "Paint & peeling";
+  const c = (klass ?? "").trim().toUpperCase();
+  if (c === "A") return "Class A (immediate hazard) violations";
+  if (c === "B") return "Class B violations";
+  if (c === "C") return "Class C violations";
+  return "General housing maintenance";
+}
+
+async function fetchPortfolioViolationTrends(
+  contacts: HpdRegistrationContactRow[],
+  headers: HeadersInit,
+): Promise<{ avgPerBuilding: number; hotspotLabel: string | null } | null> {
+  const regIds = await collectPortfolioSearchRegistrationIds(contacts, headers);
+  if (regIds.length === 0) return null;
+  const buildingCount = await fetchDistinctBuildingCountForRegistrationIds(regIds, headers);
+  if (buildingCount === 0) return null;
+  const violations = await fetchViolationsForPortfolioRegistrationIds(regIds, headers);
+  const total = violations.length;
+  const avgRaw = total / buildingCount;
+  const avgPerBuilding = Math.round(avgRaw * 10) / 10;
+  if (total === 0) {
+    return { avgPerBuilding, hotspotLabel: null };
+  }
+  const tallies = new Map<string, number>();
+  for (const v of violations) {
+    const label = classifyPortfolioViolationHotspot(v.novdescription, v.class);
+    tallies.set(label, (tallies.get(label) ?? 0) + 1);
+  }
+  let hotspotLabel = "General housing maintenance";
+  let max = 0;
+  for (const [label, n] of tallies) {
+    if (n > max) {
+      max = n;
+      hotspotLabel = label;
+    }
+  }
+  return { avgPerBuilding, hotspotLabel };
+}
+
+function RegistrationContactPersonValue({ row }: { row: HpdRegistrationContactRow | null }) {
+  if (!row) return <>—</>;
+  const titleRaw = row.title?.trim();
+  const name = formatPersonNameParts(row);
+  const tKey = normalizeRegistrationTitleKey(titleRaw);
+  const isHeadOfficerRole = tKey === "head_officer" || row.type === "HeadOfficer";
+  const isManagingAgentRole = tKey === "managing_agent";
+  const showRichHeadOrManaging = isHeadOfficerRole || isManagingAgentRole;
+
+  if (showRichHeadOrManaging) {
+    const friendlyLabel =
+      tKey === "head_officer" ? "Head Officer" : tKey === "managing_agent" ? "Managing Agent" : null;
+    let displayTitle = friendlyLabel ?? "";
+    if (!displayTitle && isHeadOfficerRole) displayTitle = "Head Officer";
+    if (!displayTitle && isManagingAgentRole) displayTitle = "Managing Agent";
+    if (!displayTitle && titleRaw) displayTitle = titleRaw.replace(/[,.\s]+$/g, "").trim();
+
+    return (
+      <div className="space-y-1.5">
+        {displayTitle ? (
+          <p className="text-base font-medium leading-snug text-[#1A1A1A]">{displayTitle}</p>
+        ) : null}
+        {isHeadOfficerRole ? (
+          <p className="text-xs leading-relaxed text-stone-500">
+            High-level officer of the owning entity.
+          </p>
+        ) : null}
+        {isManagingAgentRole ? (
+          <p className="text-xs leading-relaxed text-stone-500">
+            Responsible for day-to-day operations and repairs.
+          </p>
+        ) : null}
+        {name ? (
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span className="text-base font-medium leading-snug text-[#1A1A1A]">{name}</span>
+          </div>
+        ) : null}
+        {!displayTitle && !name ? <span>—</span> : null}
+      </div>
+    );
+  }
+
+  return (
+    <span className="text-base font-medium leading-snug text-[#1A1A1A]">
+      {formatRegistrationContactPerson(row)}
+    </span>
+  );
+}
+
+function formatPersonNameParts(row: HpdRegistrationContactRow): string {
+  return [row.firstname, row.middleinitial, row.lastname]
+    .map((p) => (p == null ? "" : String(p).trim()))
+    .filter(Boolean)
+    .join(" ");
+}
+
+function formatRegistrationCompanyName(row: HpdRegistrationContactRow | null): string {
+  if (!row) return "—";
+  const corp = row.corporationname?.trim();
+  if (corp) return corp;
+  const person = formatPersonNameParts(row);
+  return person || "—";
+}
+
+function formatRegistrationContactPerson(row: HpdRegistrationContactRow | null): string {
+  if (!row) return "—";
+  const title = row.title?.trim();
+  const person = formatPersonNameParts(row);
+  if (title && person) return `${title} — ${person}`;
+  if (person) return person;
+  if (title) return title;
+  return "—";
+}
+
+/** Hide Company name when it duplicates the contact person (common for individual owners / agents). */
+function shouldHideRegistrationCompanyName(row: HpdRegistrationContactRow | null): boolean {
+  if (!row) return false;
+  const company = formatRegistrationCompanyName(row).trim();
+  if (!company || company === "—") return false;
+  if (company === formatRegistrationContactPerson(row).trim()) return true;
+  const personOnly = formatPersonNameParts(row).trim();
+  if (personOnly && company === personOnly) return true;
+  return false;
+}
+
+function isZipRedacted(zip?: string): boolean {
+  const z = zip?.trim() ?? "";
+  return z.length > 0 && /^X+$/i.test(z);
+}
+
+function formatRegistrationBusinessAddress(row: HpdRegistrationContactRow | null): string {
+  if (!row) return "—";
+  const street = [row.businesshousenumber, row.businessstreetname]
+    .map((p) => (p == null ? "" : String(p).trim()))
+    .filter(Boolean)
+    .join(" ");
+  if (!street) return "—";
+  const apt = row.businessapartment?.trim();
+  const line1 = apt ? `${street}, ${apt}` : street;
+  const city = row.businesscity?.trim();
+  const st = row.businessstate?.trim();
+  const zipRaw = row.businesszip?.trim();
+  const zip = isZipRedacted(zipRaw) ? null : zipRaw;
+  const locality = [city, [st, zip].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+  return locality ? `${line1}, ${locality}` : line1;
+}
+
+/** NYC Open Data may add phone fields later; also checks optional keys on the row object. */
+function extractRegistrationPhoneDigits(row: HpdRegistrationContactRow): string | null {
+  const ext = row as HpdRegistrationContactRow & Record<string, string | undefined>;
+  const keys = [
+    "businessphone",
+    "businessphonenumber",
+    "phone",
+    "telephone",
+    "primaryphone",
+  ] as const;
+  for (const key of keys) {
+    const raw = ext[key]?.trim();
+    if (!raw) continue;
+    const digits = raw.replace(/\D/g, "");
+    if (digits.length >= 10) {
+      if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
+      return digits.slice(-10);
+    }
   }
   return null;
 }
@@ -399,6 +951,22 @@ export default function Home() {
   const [hpdRegistrationContacts, setHpdRegistrationContacts] = useState<HpdRegistrationContactRow[]>(
     [],
   );
+  /** Distinct MDR `buildingid`s tied to the head officer or managing agent (minus this building). */
+  const [portfolioOtherBuildingsCount, setPortfolioOtherBuildingsCount] = useState<number | null>(
+    null,
+  );
+  /** Current search address — MDR `buildingid`s from tesw-yqqr (for portfolio overlap). */
+  const [portfolioAnchorBuildingIds, setPortfolioAnchorBuildingIds] = useState<string[]>([]);
+  /** Other buildings sharing the portfolio source registered business address (Secret Portfolio). */
+  const [addressNetworkOtherBuildingsCount, setAddressNetworkOtherBuildingsCount] = useState<
+    number | null
+  >(null);
+  const [negotiationStrategyModalOpen, setNegotiationStrategyModalOpen] = useState(false);
+  /** Systemic violation trend across portfolio (name + address search) — HPD violations API. */
+  const [portfolioTrends, setPortfolioTrends] = useState<{
+    avgPerBuilding: number;
+    hotspotLabel: string | null;
+  } | null>(null);
   const [error, setError] = useState("");
   const [rentCheckMonthly, setRentCheckMonthly] = useState("");
   const [rentCheckBedroom, setRentCheckBedroom] = useState<RentBedroomOption>("1br");
@@ -426,6 +994,62 @@ export default function Home() {
   useEffect(() => {
     setStreetViewImageFailed(false);
   }, [streetViewUrl]);
+
+  useEffect(() => {
+    if (resultsTab !== "owner" || complaintCount === null) return;
+    let cancelled = false;
+    const headers = { "X-App-Token": APP_TOKEN };
+    void (async () => {
+      const anchorRows = portfolioAnchorBuildingIds.map((id) => ({ buildingid: id }));
+      const src = pickPortfolioNameSource(hpdRegistrationContacts);
+      const addrRow = pickRegistrationRowWithBusinessAddress(hpdRegistrationContacts);
+
+      const namePromise = (async () => {
+        if (!src) {
+          if (!cancelled) setPortfolioOtherBuildingsCount(null);
+          return;
+        }
+        try {
+          const n = await fetchPortfolioOtherBuildingsCount(
+            src.row.firstname ?? "",
+            src.row.lastname ?? "",
+            anchorRows,
+            headers,
+          );
+          if (!cancelled) setPortfolioOtherBuildingsCount(n);
+        } catch {
+          if (!cancelled) setPortfolioOtherBuildingsCount(null);
+        }
+      })();
+
+      const addressPromise = (async () => {
+        if (!addrRow || !buildBusinessAddressWhereClause(addrRow)) {
+          if (!cancelled) setAddressNetworkOtherBuildingsCount(null);
+          return;
+        }
+        try {
+          const n = await fetchAddressNetworkOtherBuildingsCount(addrRow, anchorRows, headers);
+          if (!cancelled) setAddressNetworkOtherBuildingsCount(n);
+        } catch {
+          if (!cancelled) setAddressNetworkOtherBuildingsCount(null);
+        }
+      })();
+
+      const trendsPromise = (async () => {
+        try {
+          const t = await fetchPortfolioViolationTrends(hpdRegistrationContacts, headers);
+          if (!cancelled) setPortfolioTrends(t);
+        } catch {
+          if (!cancelled) setPortfolioTrends(null);
+        }
+      })();
+
+      await Promise.all([namePromise, addressPromise, trendsPromise]);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [resultsTab, complaintCount, hpdRegistrationContacts, portfolioAnchorBuildingIds]);
 
   const safetyLevel = useMemo(() => {
     if (complaintCount === null) return null;
@@ -495,15 +1119,44 @@ export default function Home() {
     [hpdViolations],
   );
 
-  const ownerDisplayName = useMemo(
-    () => pickOwnerDisplay(hpdRegistrationContacts),
+  const ownerContactRow = useMemo(
+    () => pickOwnerContactRow(hpdRegistrationContacts),
     [hpdRegistrationContacts],
   );
 
-  const managingAgentDisplayName = useMemo(
-    () => pickManagingAgentDisplay(hpdRegistrationContacts),
+  const managingAgentContactRow = useMemo(
+    () => pickManagingAgentContactRow(hpdRegistrationContacts),
     [hpdRegistrationContacts],
   );
+
+  const headOfficerContactRow = useMemo(
+    () => pickHeadOfficerContactRow(hpdRegistrationContacts),
+    [hpdRegistrationContacts],
+  );
+
+  const managingAgentPhoneDigits = useMemo(
+    () =>
+      managingAgentContactRow ? extractRegistrationPhoneDigits(managingAgentContactRow) : null,
+    [managingAgentContactRow],
+  );
+
+  /** Aligns with Portfolio Analysis “Large” (10+ name portfolio) or address-network hub. */
+  const negotiationOperatorIsInstitutional = useMemo(() => {
+    if (portfolioOtherBuildingsCount !== null) return portfolioOtherBuildingsCount >= 10;
+    if (addressNetworkOtherBuildingsCount !== null) {
+      return addressNetworkOtherBuildingsCount >= ADDRESS_NETWORK_HUB_THRESHOLD;
+    }
+    return false;
+  }, [portfolioOtherBuildingsCount, addressNetworkOtherBuildingsCount]);
+
+  useEffect(() => {
+    if (!negotiationStrategyModalOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setNegotiationStrategyModalOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [negotiationStrategyModalOpen]);
 
   function handleRentCompare() {
     const userRent = parseMonthlyRentInput(rentCheckMonthly);
@@ -536,6 +1189,11 @@ export default function Home() {
     setRentCheckBedroom("1br");
     setRentCheckResult(null);
     setStreetViewImageFailed(false);
+    setPortfolioOtherBuildingsCount(null);
+    setAddressNetworkOtherBuildingsCount(null);
+    setPortfolioAnchorBuildingIds([]);
+    setNegotiationStrategyModalOpen(false);
+    setPortfolioTrends(null);
 
     const trimmedHouseNumber = houseNumber.trim().replace(/\s+/g, " ");
     const trimmedStreetName = streetName.trim().toUpperCase();
@@ -594,6 +1252,13 @@ export default function Home() {
       $where: hpdWhere,
       $order: "inspectiondate DESC",
       $limit: "25",
+    });
+
+    const hpdMdrWhere = `housenumber='${escapedHouseNumber}' AND zip='${escapedZip}' AND ${hpdStreetClause}`;
+    const mdrParams = new URLSearchParams({
+      $select: "registrationid,buildingid",
+      $where: hpdMdrWhere,
+      $limit: "50",
     });
 
     const rodentStreetClause = sqlUpperStreetIn("street_name", streetVariants);
@@ -721,7 +1386,19 @@ export default function Home() {
         return { count, rows };
       });
 
-      const [countResponse, countAllTimeResponse, dobListResponse, hpdRows, rodentRows, heat311Result, tenant311Result] =
+      const mdrFetch = fetch(
+        `${HPD_MULTIPLE_DWELLING_REGISTRATIONS_RESOURCE}?${mdrParams.toString()}`,
+        { headers, cache: "no-store" },
+      ).then(async (response) => {
+        if (!response.ok) return [] as Array<{ registrationid?: string | number; buildingid?: string | number }>;
+        const raw = (await response.json()) as Array<{
+          registrationid?: string | number;
+          buildingid?: string | number;
+        }>;
+        return Array.isArray(raw) ? raw : [];
+      });
+
+      const [countResponse, countAllTimeResponse, dobListResponse, hpdRows, rodentRows, heat311Result, tenant311Result, mdrRows] =
         await Promise.all([
           fetch(`${DOB_COMPLAINTS_RESOURCE}?${countParams.toString()}`, {
             headers,
@@ -739,6 +1416,7 @@ export default function Home() {
           rodentFetch.catch(() => [] as RodentInspectionRow[]),
           heat311Fetch.catch(() => ({ count: 0, rows: [] as Heat311Row[] })),
           tenant311Fetch.catch(() => ({ count: 0, rows: [] as Tenant311Row[] })),
+          mdrFetch.catch(() => [] as Array<{ registrationid?: string | number }>),
         ]);
 
       if (!countResponse.ok) {
@@ -772,23 +1450,26 @@ export default function Home() {
 
       setHpdViolations(hpdRows);
 
+      const registrationIdsFromViolations = hpdRows
+        .map((r) => r.registrationid)
+        .filter((id) => id != null && String(id).trim() !== "" && String(id) !== "0");
+      const registrationIdsFromMdr = mdrRows.map((r) => r.registrationid);
       const regIdNums = [
         ...new Set(
-          hpdRows
-            .map((r) => r.registrationid)
-            .filter((id) => id != null && String(id).trim() !== "" && String(id) !== "0"),
+          [...registrationIdsFromViolations, ...registrationIdsFromMdr].map((id) =>
+            Number(String(id).trim()),
+          ),
         ),
       ]
-        .slice(0, 8)
-        .map((id) => Number(String(id).trim()))
-        .filter((n) => Number.isFinite(n) && n > 0);
+        .filter((n) => Number.isFinite(n) && n > 0)
+        .slice(0, 12);
 
       let regContacts: HpdRegistrationContactRow[] = [];
       if (regIdNums.length > 0) {
         const regWhere = `registrationid in (${regIdNums.join(",")})`;
         const regParams = new URLSearchParams({
           $select:
-            "registrationid,type,corporationname,firstname,middleinitial,lastname,contactdescription,title",
+            "registrationcontactid,registrationid,type,corporationname,firstname,middleinitial,lastname,contactdescription,title,businesshousenumber,businessstreetname,businessapartment,businesscity,businessstate,businesszip",
           $where: regWhere,
           $limit: "200",
         });
@@ -802,6 +1483,12 @@ export default function Home() {
         }
       }
       setHpdRegistrationContacts(regContacts);
+
+      setPortfolioAnchorBuildingIds(
+        (mdrRows as Array<{ buildingid?: string | number }>)
+          .map((r) => (r.buildingid != null ? String(r.buildingid).trim() : ""))
+          .filter(Boolean),
+      );
 
       setActiveRatSignInspections(rodentRows);
       setHeatHotWater311Last12Months(heat311Result.count);
@@ -820,6 +1507,10 @@ export default function Home() {
       setTenant311Rows([]);
       setTenant311Count(null);
       setHpdViolations([]);
+      setPortfolioOtherBuildingsCount(null);
+      setAddressNetworkOtherBuildingsCount(null);
+      setPortfolioTrends(null);
+      setPortfolioAnchorBuildingIds([]);
     } finally {
       setIsLoading(false);
     }
@@ -1623,46 +2314,238 @@ export default function Home() {
               )}
 
               {resultsTab === "owner" && (
-                <div className={categoryCardClass}>
-                  <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:gap-8">
-                    <span className="shrink-0 text-5xl leading-none sm:text-6xl" aria-hidden>
-                      👤
-                    </span>
-                    <div className="min-w-0 flex-1 space-y-6">
-                      <h3 className="text-xs font-semibold uppercase tracking-[0.28em] text-[#3D362F]">
-                        Owner profile
-                      </h3>
-                      <p className="text-sm leading-relaxed text-stone-600">
-                        From HPD registration contacts matched to violations at this address.
-                      </p>
-                      <div>
-                        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
-                          Registered Owner (Entity)
-                        </p>
-                        <p className="mt-2 text-lg font-medium text-[#1A1A1A]">
-                          {ownerDisplayName ?? "Not listed in registration data"}
+                <div className="space-y-5">
+                  <div className={categoryCardClass}>
+                    <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:gap-8">
+                      <span className="shrink-0 text-5xl leading-none sm:text-6xl" aria-hidden>
+                        👤
+                      </span>
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <h3 className="text-xs font-semibold uppercase tracking-[0.28em] text-[#3D362F]">
+                          Owner profile
+                        </h3>
+                        <p className="text-sm leading-relaxed text-stone-600">
+                          From HPD Multiple Dwelling Registration contacts for this building (via
+                          violations and/or address match).
                         </p>
                       </div>
-                      <div>
-                        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
-                          Head Officer / Agent
-                        </p>
-                        <p className="mt-2 text-lg font-medium text-[#1A1A1A]">
-                          {managingAgentDisplayName ?? "Not listed in registration data"}
-                        </p>
-                      </div>
-                      <div className="rounded-xl border border-stone-200 bg-stone-50/80 p-5">
-                        <p className="text-sm font-medium text-stone-700">Analyzing portfolio…</p>
-                        <p className="mt-2 text-xs leading-relaxed text-stone-500">
-                          Stats for other buildings tied to this owner or agent will appear here soon.
-                        </p>
-                      </div>
-                      <p className="border-t border-stone-200/80 pt-4 text-[10px] leading-relaxed text-stone-500">
-                        Data sourced from HPD Property Registration. Information reflects the
-                        individuals and entities legally registered with the city for this property.
-                      </p>
                     </div>
                   </div>
+
+                  <div className="rounded-2xl border border-stone-100/90 bg-white p-6 shadow-md md:p-8">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
+                      Registered owner
+                    </p>
+                    <dl className="mt-6 space-y-5">
+                      {!shouldHideRegistrationCompanyName(ownerContactRow) ? (
+                        <div>
+                          <dt className="text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-500">
+                            Company name
+                          </dt>
+                          <dd className="mt-1.5 text-base font-medium leading-snug text-[#1A1A1A]">
+                            {formatRegistrationCompanyName(ownerContactRow)}
+                          </dd>
+                        </div>
+                      ) : null}
+                      <div>
+                        <dt className="text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-500">
+                          Contact person
+                        </dt>
+                        <dd className="mt-1.5 text-[#1A1A1A]">
+                          <RegistrationContactPersonValue row={ownerContactRow} />
+                        </dd>
+                      </div>
+                      {headOfficerContactRow &&
+                      !isSameRegistrationContactRow(headOfficerContactRow, ownerContactRow) ? (
+                        <div>
+                          <dt className="text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-500">
+                            Head officer
+                          </dt>
+                          <dd className="mt-1.5 text-[#1A1A1A]">
+                            <RegistrationContactPersonValue row={headOfficerContactRow} />
+                          </dd>
+                        </div>
+                      ) : null}
+                      <div>
+                        <dt className="text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-500">
+                          Business address
+                        </dt>
+                        <dd className="mt-1.5 text-sm leading-relaxed text-stone-700">
+                          {formatRegistrationBusinessAddress(ownerContactRow)}
+                        </dd>
+                      </div>
+                    </dl>
+                  </div>
+
+                  <div className="rounded-2xl border border-stone-100/90 bg-white p-6 shadow-md md:p-8">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
+                      Registered managing agent
+                    </p>
+                    <dl className="mt-6 space-y-5">
+                      {!shouldHideRegistrationCompanyName(managingAgentContactRow) ? (
+                        <div>
+                          <dt className="text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-500">
+                            Company name
+                          </dt>
+                          <dd className="mt-1.5 text-base font-medium leading-snug text-[#1A1A1A]">
+                            {formatRegistrationCompanyName(managingAgentContactRow)}
+                          </dd>
+                        </div>
+                      ) : null}
+                      <div>
+                        <dt className="text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-500">
+                          Contact person
+                        </dt>
+                        <dd className="mt-1.5 text-[#1A1A1A]">
+                          <RegistrationContactPersonValue row={managingAgentContactRow} />
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-500">
+                          Business address
+                        </dt>
+                        <dd className="mt-1.5 text-sm leading-relaxed text-stone-700">
+                          {formatRegistrationBusinessAddress(managingAgentContactRow)}
+                        </dd>
+                      </div>
+                    </dl>
+                    {managingAgentPhoneDigits ? (
+                      <a
+                        href={`tel:+1${managingAgentPhoneDigits}`}
+                        className="mt-6 inline-flex h-11 items-center justify-center border border-stone-300 bg-[#2D2926] px-6 text-xs font-semibold uppercase tracking-[0.16em] text-white shadow-sm transition hover:opacity-90"
+                      >
+                        Call management
+                      </a>
+                    ) : null}
+                  </div>
+
+                  {portfolioOtherBuildingsCount !== null ||
+                  addressNetworkOtherBuildingsCount !== null ||
+                  portfolioTrends !== null ? (
+                    <div className="rounded-2xl border border-stone-100/90 bg-white p-6 shadow-md md:p-8">
+                      <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:gap-6">
+                        <div
+                          className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-stone-100 to-stone-200/80 text-[#3D362F] shadow-inner ring-1 ring-stone-200/80"
+                          aria-hidden
+                        >
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            className="h-9 w-9"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <path d="M3 21h18M6 21V10l6-3 6 3v11M10 21v-5h4v5M10 9.5h.01M12 9.5h.01M14 9.5h.01" />
+                          </svg>
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <h3 className="text-xs font-semibold uppercase tracking-[0.28em] text-[#3D362F]">
+                            Portfolio Analysis
+                          </h3>
+                          {portfolioOtherBuildingsCount !== null ? (
+                            <p className="mt-4 text-base leading-relaxed text-stone-700 md:text-lg">
+                              {portfolioOtherBuildingsCount >= 10 ? (
+                                <>
+                                  <span className="font-semibold text-[#1A1A1A]">Large Portfolio:</span>{" "}
+                                  This individual is a major player with{" "}
+                                  <span className="font-semibold tabular-nums text-[#1A1A1A]">
+                                    {portfolioOtherBuildingsCount}
+                                  </span>{" "}
+                                  registered properties.
+                                </>
+                              ) : (
+                                <>
+                                  <span className="font-semibold text-[#1A1A1A]">Limited Portfolio:</span>{" "}
+                                  This individual appears to be a smaller operator or local owner.
+                                </>
+                              )}
+                            </p>
+                          ) : null}
+                          {addressNetworkOtherBuildingsCount !== null ? (
+                            <div
+                              className={
+                                portfolioOtherBuildingsCount !== null ? "mt-5 border-t border-stone-200/80 pt-5" : "mt-4"
+                              }
+                            >
+                              <p className="flex flex-wrap items-center gap-2 text-base leading-relaxed text-stone-700 md:text-lg">
+                                <span>
+                                  <span className="font-semibold text-[#1A1A1A]">Address Network:</span>{" "}
+                                  <span className="tabular-nums font-semibold text-[#1A1A1A]">
+                                    {addressNetworkOtherBuildingsCount}
+                                  </span>{" "}
+                                  other buildings are managed from this same office.
+                                </span>
+                                {addressNetworkOtherBuildingsCount >= ADDRESS_NETWORK_HUB_THRESHOLD ? (
+                                  <span className="inline-flex items-center rounded-full border border-amber-200/90 bg-amber-50 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-950">
+                                    Professional Management Hub
+                                  </span>
+                                ) : null}
+                              </p>
+                            </div>
+                          ) : null}
+                          {portfolioTrends ? (
+                            <div
+                              className={
+                                portfolioOtherBuildingsCount !== null ||
+                                addressNetworkOtherBuildingsCount !== null
+                                  ? "mt-5 border-t border-stone-200/80 pt-5"
+                                  : "mt-4"
+                              }
+                            >
+                              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
+                                Portfolio Trends
+                              </p>
+                              <p className="mt-2 text-base leading-relaxed text-stone-700 md:text-lg">
+                                Buildings in this portfolio average{" "}
+                                <span className="font-semibold tabular-nums text-[#1A1A1A]">
+                                  {portfolioTrends.avgPerBuilding}
+                                </span>{" "}
+                                violations per property.
+                              </p>
+                              {portfolioTrends.hotspotLabel ? (
+                                <p className="mt-3 text-sm leading-relaxed text-amber-950 md:text-base">
+                                  <span className="font-semibold">Warning:</span>{" "}
+                                  {portfolioTrends.hotspotLabel} is a recurring problem in this
+                                  landlord&apos;s other buildings.
+                                </p>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          <div className="mt-6 border-t border-stone-200/80 pt-5">
+                            <button
+                              type="button"
+                              onClick={() => setNegotiationStrategyModalOpen(true)}
+                              className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-white px-4 py-2.5 text-sm font-medium text-[#3D362F] shadow-sm transition hover:bg-stone-50"
+                            >
+                              <span className="text-amber-500" aria-hidden>
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.5"
+                                  className="h-4 w-4"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <path d="M12 18v-5.25m0 0a6.01 6.01 0 001.5-.189m-1.5.189a6.01 6.01 0 01-1.5-.189m1.5.189v.007m0-.007v-.007m0 .007v.004m0-.004a6.01 6.01 0 011.5-.189M12 12.75V9.75m5.25 2.25a6.004 6.004 0 01-1.875.3M12 12.75a6.004 6.004 0 00-1.875-.3M18.75 9a6.75 6.75 0 11-13.5 0 6.75 6.75 0 0113.5 0z" />
+                                </svg>
+                              </span>
+                              Get Negotiation Strategy
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <p className="text-[10px] leading-relaxed text-stone-500">
+                    Data sourced from NYC Open Data — HPD Registration Contacts. Phone numbers are not
+                    always published; a call link appears only when a number is present in the dataset.
+                  </p>
                 </div>
               )}
 
@@ -1670,6 +2553,84 @@ export default function Home() {
           </section>
         ) : null}
       </main>
+
+      {negotiationStrategyModalOpen ? (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="negotiation-strategy-title"
+        >
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/45"
+            aria-label="Close dialog"
+            onClick={() => setNegotiationStrategyModalOpen(false)}
+          />
+          <div className="relative z-10 max-h-[min(90vh,720px)] w-full max-w-lg overflow-y-auto rounded-2xl border border-stone-200 bg-white p-6 shadow-2xl md:p-8">
+            <div className="flex items-start justify-between gap-4 border-b border-stone-200/90 pb-4">
+              <h2
+                id="negotiation-strategy-title"
+                className="font-serif text-xl font-light tracking-wide text-[#1A1A1A] md:text-2xl"
+              >
+                Negotiation Strategy
+              </h2>
+              <button
+                type="button"
+                onClick={() => setNegotiationStrategyModalOpen(false)}
+                className="rounded-lg p-1.5 text-stone-500 transition hover:bg-stone-100 hover:text-[#1A1A1A]"
+                aria-label="Close"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  className="h-5 w-5"
+                  aria-hidden
+                >
+                  <path d="M6 18L18 6M6 6l12 12" strokeLinecap="round" />
+                </svg>
+              </button>
+            </div>
+            <div className="mt-6 space-y-8">
+              <section>
+                <h3 className="text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
+                  The Profile
+                </h3>
+                <p className="mt-2 text-sm leading-relaxed text-stone-800 md:text-base">
+                  {negotiationOperatorIsInstitutional
+                    ? "You are dealing with an Institutional Landlord."
+                    : "You are dealing with a Local Operator."}
+                </p>
+              </section>
+              <section>
+                <h3 className="text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
+                  The Leverage
+                </h3>
+                <p className="mt-2 text-sm leading-relaxed text-stone-800 md:text-base">
+                  {negotiationOperatorIsInstitutional
+                    ? "Highlight your high credit score and stability—firms this size hate 'turnover costs'."
+                    : "Focus on a personal connection and offer to handle minor fixes in exchange for rent stability."}
+                </p>
+              </section>
+              <section>
+                <h3 className="text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
+                  The Counter-Offer
+                </h3>
+                <p className="mt-2 text-sm leading-relaxed text-stone-800 md:text-base">
+                  Based on the{" "}
+                  <span className="font-semibold tabular-nums text-[#1A1A1A]">{hpdViolations.length}</span>{" "}
+                  violations in this building, consider asking for a rent credit or a free month of
+                  amenities (gym/storage) to compensate for management delays.
+                </p>
+              </section>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <footer className="mt-auto border-t border-stone-200/80 bg-[#FDFCFB]">
         <div className="mx-auto max-w-5xl px-6 py-5 md:px-10 md:py-6">
           <p className="text-[10px] leading-relaxed text-gray-400">
