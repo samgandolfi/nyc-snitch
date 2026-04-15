@@ -77,7 +77,7 @@ const DOB_COMPLAINTS_RESOURCE =
 const HPD_REGISTRATION_CONTACTS_RESOURCE =
   "https://data.cityofnewyork.us/resource/feu5-w2e2.json";
 
-type ResultsTabId = "overview" | "history" | "owner";
+type ResultsTabId = "overview" | "history" | "rent" | "owner";
 
 /** Rent Check — neighborhood baseline averages (monthly). */
 type RentBedroomOption = "studio" | "1br" | "2br" | "3brPlus";
@@ -498,51 +498,6 @@ export default function Home() {
     setRentCheckResult({ percentDiff, userRent, average });
   }
 
-  const overviewRecentActivity = useMemo(() => {
-    type Item = { id: string; t: number; text: string; tag: string; dateLabel: string };
-    const items: Item[] = [];
-    for (const r of dobComplaints.slice(0, 12)) {
-      const d = parseDateForSort(r.date_entered);
-      const t = d?.getTime() ?? 0;
-      const cat = (r.complaint_category ?? "").trim();
-      items.push({
-        id: `dob-${r.complaint_number ?? r.date_entered}-${t}`,
-        t,
-        text: getDobComplaintCategoryLabel(cat),
-        tag: "DOB",
-        dateLabel: formatEnteredDate(r.date_entered),
-      });
-    }
-    for (const r of visibleHpdViolations.slice(0, 12)) {
-      const d = parseDateForSort(r.inspectiondate);
-      const t = d?.getTime() ?? 0;
-      const klass =
-        r.class != null && String(r.class).trim() !== ""
-          ? `Class ${String(r.class).trim()} violation`
-          : "HPD violation";
-      items.push({
-        id: `hpd-${r.violationid ?? r.inspectiondate}-${t}`,
-        t,
-        text: klass,
-        tag: "HPD",
-        dateLabel: formatEnteredDate(r.inspectiondate),
-      });
-    }
-    for (const r of sortedTenant311Rows.slice(0, 12)) {
-      const d = parseDateForSort(r.created_date);
-      const t = d?.getTime() ?? 0;
-      items.push({
-        id: `311-${r.unique_key ?? r.created_date}-${t}`,
-        t,
-        text: r.complaint_type?.trim() || "Tenant 311 (HPD)",
-        tag: "311",
-        dateLabel: formatEnteredDate(r.created_date),
-      });
-    }
-    items.sort((a, b) => b.t - a.t);
-    return items.slice(0, 6);
-  }, [dobComplaints, visibleHpdViolations, sortedTenant311Rows]);
-
   async function checkBuilding(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
@@ -933,6 +888,7 @@ export default function Home() {
                   [
                     ["overview", "Overview"],
                     ["history", "History"],
+                    ["rent", "Rent Analysis"],
                     ["owner", "Owner Profile"],
                   ] as const
                 ).map(([id, label]) => (
@@ -963,121 +919,6 @@ export default function Home() {
                     </span>
                     <p className="text-xs font-medium uppercase tracking-[0.2em] text-stone-600">
                       Photo Preview (API Pending)
-                    </p>
-                  </div>
-
-                  <div className="rounded-2xl border border-stone-200 bg-white p-6 shadow-md md:p-8">
-                    <h3 className="text-xs font-semibold uppercase tracking-[0.28em] text-[#3D362F]">
-                      Rent Check
-                    </h3>
-                    <p className="mt-2 text-sm text-stone-600">
-                      Compare your rent to a simple neighborhood baseline for this ZIP.
-                    </p>
-                    <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
-                      <label className="block min-w-[10rem] flex-1">
-                        <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-500">
-                          Monthly rent
-                        </span>
-                        <div className="mt-2 flex h-12 items-center border border-stone-300 bg-white px-3 shadow-sm">
-                          <span className="select-none pr-2 font-medium text-stone-500">$</span>
-                          <input
-                            type="text"
-                            inputMode="decimal"
-                            value={rentCheckMonthly}
-                            onChange={(e) => setRentCheckMonthly(e.target.value)}
-                            placeholder="2,800"
-                            className="min-w-0 flex-1 bg-transparent text-sm text-[#1A1A1A] outline-none placeholder:text-stone-400"
-                            aria-label="Monthly rent in dollars"
-                          />
-                        </div>
-                      </label>
-                      <label className="block min-w-[10rem] flex-1">
-                        <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-500">
-                          Bedroom size
-                        </span>
-                        <select
-                          value={rentCheckBedroom}
-                          onChange={(e) =>
-                            setRentCheckBedroom(e.target.value as RentBedroomOption)
-                          }
-                          className="mt-2 h-12 w-full border border-stone-300 bg-white px-3 text-sm text-[#1A1A1A] shadow-sm outline-none"
-                          aria-label="Bedroom size"
-                        >
-                          <option value="studio">Studio</option>
-                          <option value="1br">1BR</option>
-                          <option value="2br">2BR</option>
-                          <option value="3brPlus">3BR+</option>
-                        </select>
-                      </label>
-                      <button
-                        type="button"
-                        onClick={handleRentCompare}
-                        className="h-12 shrink-0 border border-[#1A1A1A] bg-[#2D2926] px-8 text-xs font-semibold uppercase tracking-[0.18em] text-white shadow-sm transition hover:opacity-90"
-                      >
-                        Compare
-                      </button>
-                    </div>
-
-                    {rentCheckResult ? (
-                      <div className="mt-8 border-t border-stone-200/80 pt-8">
-                        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
-                          Deal meter
-                        </p>
-                        <p className="mt-1 text-xs text-stone-500">
-                          Green = below average · Red = above average
-                        </p>
-                        <div className="relative mt-4 h-4 w-full">
-                          <div
-                            className="h-full w-full rounded-full bg-gradient-to-r from-emerald-300 via-amber-200 to-rose-400 ring-1 ring-stone-300/80"
-                            aria-hidden
-                          />
-                          <div
-                            className="absolute top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-[#1A1A1A] shadow-md"
-                            style={{
-                              left: `${rentDealMeterMarkerPercent(rentCheckResult.percentDiff)}%`,
-                            }}
-                            aria-hidden
-                          />
-                        </div>
-                        <p className="mt-6 text-base font-medium leading-snug text-[#1A1A1A]">
-                          {Math.abs(rentCheckResult.percentDiff) < 0.75 ? (
-                            <>You are paying about the same as the neighborhood average.</>
-                          ) : rentCheckResult.percentDiff > 0 ? (
-                            <>
-                              You are paying{" "}
-                              <span className="text-rose-700">
-                                {Math.round(Math.abs(rentCheckResult.percentDiff) * 10) / 10}%
-                              </span>{" "}
-                              more than the neighborhood average.
-                            </>
-                          ) : (
-                            <>
-                              You are paying{" "}
-                              <span className="text-emerald-700">
-                                {Math.round(Math.abs(rentCheckResult.percentDiff) * 10) / 10}%
-                              </span>{" "}
-                              less than the neighborhood average.
-                            </>
-                          )}
-                        </p>
-                        <p className="mt-2 text-xs text-stone-500">
-                          Your rent:{" "}
-                          <span className="font-medium text-[#1A1A1A]">
-                            ${rentCheckResult.userRent.toLocaleString("en-US")}
-                          </span>
-                          {" · "}
-                          Baseline for this ZIP and bedroom size:{" "}
-                          <span className="font-medium text-[#1A1A1A]">
-                            ${rentCheckResult.average.toLocaleString("en-US")}
-                          </span>
-                          /mo
-                        </p>
-                      </div>
-                    ) : null}
-
-                    <p className="mt-6 border-t border-stone-100 pt-4 text-[10px] leading-relaxed text-stone-500">
-                      Baseline estimate only. Rent varies based on building age, laundry, and
-                      amenities.
                     </p>
                   </div>
 
@@ -1183,40 +1024,124 @@ export default function Home() {
                       Violations whose status still looks active (not certified closed or dismissed).
                     </p>
                   </div>
-
-                  <div className="rounded-2xl border border-stone-100/90 bg-white p-6 shadow-md md:p-8">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
-                      Most recent activity
-                    </p>
-                    {overviewRecentActivity.length > 0 ? (
-                      <ul className="mt-4 space-y-3">
-                        {overviewRecentActivity.map((item) => (
-                          <li key={item.id} className="flex gap-3 text-sm leading-snug text-stone-700">
-                            <span className="shrink-0 tabular-nums text-stone-400">{item.dateLabel}</span>
-                            <span className="min-w-0">
-                              <span className="font-medium text-[#1A1A1A]">[{item.tag}]</span>{" "}
-                              {item.text}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="mt-4 text-sm text-stone-500">
-                        No recent DOB, HPD, or tenant 311 rows in this snapshot.
-                      </p>
-                    )}
-                    <p className="mt-6 text-center text-xs text-stone-500">
-                      <button
-                        type="button"
-                        onClick={() => setResultsTab("history")}
-                        className="font-semibold text-[#1A1A1A] underline decoration-stone-300 underline-offset-2 hover:decoration-rose-400"
-                      >
-                        Open History
-                      </button>{" "}
-                      for full chronological lists.
-                    </p>
-                  </div>
                 </>
+              )}
+
+              {resultsTab === "rent" && (
+                <div className={categoryCardClass}>
+                  <h3 className="text-xs font-semibold uppercase tracking-[0.28em] text-[#3D362F]">
+                    Rent Analysis
+                  </h3>
+                  <p className="mt-2 text-sm text-stone-600">
+                    Compare your rent to a simple neighborhood baseline for this building&apos;s ZIP.
+                  </p>
+                  <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
+                    <label className="block min-w-[10rem] flex-1">
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-500">
+                        Monthly rent
+                      </span>
+                      <div className="mt-2 flex h-12 items-center border border-stone-300 bg-white px-3 shadow-sm">
+                        <span className="select-none pr-2 font-medium text-stone-500">$</span>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={rentCheckMonthly}
+                          onChange={(e) => setRentCheckMonthly(e.target.value)}
+                          placeholder="2,800"
+                          className="min-w-0 flex-1 bg-transparent text-sm text-[#1A1A1A] outline-none placeholder:text-stone-400"
+                          aria-label="Monthly rent in dollars"
+                        />
+                      </div>
+                    </label>
+                    <label className="block min-w-[10rem] flex-1">
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-500">
+                        Bedroom size
+                      </span>
+                      <select
+                        value={rentCheckBedroom}
+                        onChange={(e) =>
+                          setRentCheckBedroom(e.target.value as RentBedroomOption)
+                        }
+                        className="mt-2 h-12 w-full border border-stone-300 bg-white px-3 text-sm text-[#1A1A1A] shadow-sm outline-none"
+                        aria-label="Bedroom size"
+                      >
+                        <option value="studio">Studio</option>
+                        <option value="1br">1BR</option>
+                        <option value="2br">2BR</option>
+                        <option value="3brPlus">3BR+</option>
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleRentCompare}
+                      className="h-12 shrink-0 border border-[#1A1A1A] bg-[#2D2926] px-8 text-xs font-semibold uppercase tracking-[0.18em] text-white shadow-sm transition hover:opacity-90"
+                    >
+                      Compare
+                    </button>
+                  </div>
+
+                  {rentCheckResult ? (
+                    <div className="mt-8 border-t border-stone-200/80 pt-8">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
+                        Deal meter
+                      </p>
+                      <p className="mt-1 text-xs text-stone-500">
+                        Green = below average · Red = above average
+                      </p>
+                      <div className="relative mt-4 h-4 w-full">
+                        <div
+                          className="h-full w-full rounded-full bg-gradient-to-r from-emerald-300 via-amber-200 to-rose-400 ring-1 ring-stone-300/80"
+                          aria-hidden
+                        />
+                        <div
+                          className="absolute top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-[#1A1A1A] shadow-md"
+                          style={{
+                            left: `${rentDealMeterMarkerPercent(rentCheckResult.percentDiff)}%`,
+                          }}
+                          aria-hidden
+                        />
+                      </div>
+                      <p className="mt-6 text-base font-medium leading-snug text-[#1A1A1A]">
+                        {Math.abs(rentCheckResult.percentDiff) < 0.75 ? (
+                          <>You are paying about the same as the neighborhood average.</>
+                        ) : rentCheckResult.percentDiff > 0 ? (
+                          <>
+                            You are paying{" "}
+                            <span className="text-rose-700">
+                              {Math.round(Math.abs(rentCheckResult.percentDiff) * 10) / 10}%
+                            </span>{" "}
+                            more than the neighborhood average.
+                          </>
+                        ) : (
+                          <>
+                            You are paying{" "}
+                            <span className="text-emerald-700">
+                              {Math.round(Math.abs(rentCheckResult.percentDiff) * 10) / 10}%
+                            </span>{" "}
+                            less than the neighborhood average.
+                          </>
+                        )}
+                      </p>
+                      <p className="mt-2 text-xs text-stone-500">
+                        Your rent:{" "}
+                        <span className="font-medium text-[#1A1A1A]">
+                          ${rentCheckResult.userRent.toLocaleString("en-US")}
+                        </span>
+                        {" · "}
+                        Baseline for this ZIP and bedroom size:{" "}
+                        <span className="font-medium text-[#1A1A1A]">
+                          ${rentCheckResult.average.toLocaleString("en-US")}
+                        </span>
+                        /mo
+                      </p>
+                    </div>
+                  ) : null}
+
+                  <p className="mt-6 border-t border-stone-200/80 pt-4 text-[10px] leading-relaxed text-stone-500">
+                    Baseline estimate only. Rent varies based on building age, laundry, and
+                    amenities.
+                  </p>
+                </div>
               )}
 
               {resultsTab === "history" && (
