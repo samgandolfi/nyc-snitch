@@ -1060,6 +1060,27 @@ export default function Home() {
                       Violations whose status still looks active (not certified closed or dismissed).
                     </p>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => setResultsTab("history")}
+                    className="mt-8 w-full py-4 px-6 border border-zinc-200 rounded-xl text-sm font-semibold text-zinc-900 hover:bg-zinc-50 transition-all flex items-center justify-center gap-2 shadow-sm"
+                  >
+                    <span>View full violation history</span>
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      className="h-4 w-4"
+                    >
+                      <path
+                        d="M7.5 5.5L12 10L7.5 14.5"
+                        stroke="currentColor"
+                        strokeWidth="1.75"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </button>
                 </>
               )}
 
