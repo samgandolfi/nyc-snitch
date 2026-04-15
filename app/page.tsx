@@ -1063,7 +1063,7 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={() => setResultsTab("history")}
-                    className="mt-8 w-full py-4 px-6 border border-zinc-200 rounded-xl text-sm font-semibold text-zinc-900 hover:bg-zinc-50 transition-all flex items-center justify-center gap-2 shadow-sm"
+                    className="inline-flex items-center gap-2 text-sm text-zinc-500 hover:text-black transition-colors"
                   >
                     <span>View full violation history</span>
                     <svg
