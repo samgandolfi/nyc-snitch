@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { getDobComplaintCategoryLabel } from "@/lib/dob-complaint-categories";
 
 type SafetyLevel = "Green" | "Yellow" | "Red";
@@ -407,6 +407,25 @@ export default function Home() {
     userRent: number;
     average: number;
   } | null>(null);
+  const [streetViewImageFailed, setStreetViewImageFailed] = useState(false);
+
+  const googleMapsBrowserKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "";
+
+  const streetViewUrl = useMemo(() => {
+    if (!googleMapsBrowserKey) return null;
+    const hn = houseNumber.trim().replace(/\s+/g, " ");
+    const sn = streetName.trim();
+    const zip5 = zipCode.replace(/\D/g, "").slice(0, 5);
+    if (!hn || !sn || zip5.length !== 5) return null;
+    const address = `${hn} ${sn}`;
+    const zip = zip5;
+    const location = encodeURIComponent(`${address},${zip}`);
+    return `https://maps.googleapis.com/maps/api/streetview?size=800x400&location=${location}&key=${googleMapsBrowserKey}`;
+  }, [googleMapsBrowserKey, houseNumber, streetName, zipCode]);
+
+  useEffect(() => {
+    setStreetViewImageFailed(false);
+  }, [streetViewUrl]);
 
   const safetyLevel = useMemo(() => {
     if (complaintCount === null) return null;
@@ -516,6 +535,7 @@ export default function Home() {
     setRentCheckMonthly("");
     setRentCheckBedroom("1br");
     setRentCheckResult(null);
+    setStreetViewImageFailed(false);
 
     const trimmedHouseNumber = houseNumber.trim().replace(/\s+/g, " ");
     const trimmedStreetName = streetName.trim().toUpperCase();
@@ -913,13 +933,29 @@ export default function Home() {
             <div className="mt-6 space-y-8">
               {resultsTab === "overview" && (
                 <>
-                  <div className="overflow-hidden rounded-2xl border border-stone-200 bg-gradient-to-br from-stone-100 via-stone-200/90 to-stone-300/80 shadow-md ring-1 ring-stone-200/60 aspect-[2/1] flex flex-col items-center justify-center gap-3">
-                    <span className="text-6xl opacity-50 grayscale sm:text-7xl md:text-8xl" aria-hidden>
-                      🏠
-                    </span>
-                    <p className="text-xs font-medium uppercase tracking-[0.2em] text-stone-600">
-                      Photo Preview (API Pending)
-                    </p>
+                  <div className="relative aspect-[2/1] w-full overflow-hidden rounded-xl border border-stone-200 bg-stone-200/80 shadow-md ring-1 ring-stone-200/60">
+                    {streetViewUrl && !streetViewImageFailed ? (
+                      <img
+                        src={streetViewUrl}
+                        alt={`Street View of ${houseNumber.trim()} ${streetName.trim().toUpperCase()}, ${zipCode.replace(/\D/g, "").slice(0, 5)}`}
+                        className="h-full w-full object-cover rounded-xl"
+                        onError={() => setStreetViewImageFailed(true)}
+                        loading="lazy"
+                        decoding="async"
+                      />
+                    ) : (
+                      <div className="flex h-full min-h-[10rem] w-full flex-col items-center justify-center gap-3 bg-gradient-to-br from-stone-100 via-stone-200/90 to-stone-300/80">
+                        <span
+                          className="text-6xl opacity-50 grayscale sm:text-7xl md:text-8xl"
+                          aria-hidden
+                        >
+                          🏠
+                        </span>
+                        <p className="px-4 text-center text-xs font-medium uppercase tracking-[0.2em] text-stone-600">
+                          Building preview unavailable
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   <div className="grid gap-5 md:grid-cols-3 md:gap-6">
