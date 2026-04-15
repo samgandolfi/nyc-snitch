@@ -1476,7 +1476,7 @@ export default function Home() {
                       </p>
                       <div>
                         <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
-                          Owner
+                          Registered Owner (Entity)
                         </p>
                         <p className="mt-2 text-lg font-medium text-[#1A1A1A]">
                           {ownerDisplayName ?? "Not listed in registration data"}
@@ -1484,7 +1484,7 @@ export default function Home() {
                       </div>
                       <div>
                         <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-stone-500">
-                          Registered managing agent
+                          Head Officer / Agent
                         </p>
                         <p className="mt-2 text-lg font-medium text-[#1A1A1A]">
                           {managingAgentDisplayName ?? "Not listed in registration data"}
@@ -1496,6 +1496,10 @@ export default function Home() {
                           Stats for other buildings tied to this owner or agent will appear here soon.
                         </p>
                       </div>
+                      <p className="border-t border-stone-200/80 pt-4 text-[10px] leading-relaxed text-stone-500">
+                        Data sourced from HPD Property Registration. Information reflects the
+                        individuals and entities legally registered with the city for this property.
+                      </p>
                     </div>
                   </div>
                 </div>
